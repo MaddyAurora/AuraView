@@ -14,6 +14,7 @@ import {
 
 interface NavigationBarProps {
   url: string;
+  isLoading?: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
   isSplitActive: boolean;
@@ -31,6 +32,7 @@ interface NavigationBarProps {
 
 export const NavigationBar: React.FC<NavigationBarProps> = ({
   url,
+  isLoading,
   canGoBack,
   canGoForward,
   isSplitActive,
@@ -70,8 +72,8 @@ export const NavigationBar: React.FC<NavigationBarProps> = ({
       if (/^[a-zA-Z0-9-]+\.[a-zA-Z]{2,}(\/.*)?$/.test(target)) {
         target = `https://${target}`;
       } else {
-        // Fallback to DuckDuckGo / search query
-        target = `https://duckduckgo.com/?q=${encodeURIComponent(target)}`;
+        // Fallback to Google search query
+        target = `https://www.google.com/search?q=${encodeURIComponent(target)}`;
       }
     }
 
@@ -106,7 +108,7 @@ export const NavigationBar: React.FC<NavigationBarProps> = ({
           className="p-1.5 rounded-md hover:bg-[#202e3b] transition-colors text-gray-400 hover:text-gray-100"
           title="Reload (Ctrl+R)"
         >
-          <RotateCw className="w-3.5 h-3.5" />
+          <RotateCw className={`w-3.5 h-3.5 transition-transform ${isLoading ? 'animate-spin text-purple-400' : ''}`} />
         </button>
         <button
           onClick={onGoHome}

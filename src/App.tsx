@@ -4,23 +4,15 @@ import { TabBar } from './components/TabBar';
 import { NavigationBar } from './components/NavigationBar';
 import { LocalhostDock } from './components/LocalhostDock';
 import { WebviewContainer } from './components/WebviewContainer';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 const INITIAL_TABS: Tab[] = [
   {
     id: 'tab-1',
-    title: 'ComfyUI (8188)',
-    url: 'http://localhost:8188',
-    inputUrl: 'http://localhost:8188',
-    isLoading: false,
-    canGoBack: false,
-    canGoForward: false,
-    isAiServer: true,
-  },
-  {
-    id: 'tab-2',
-    title: 'YouTube',
-    url: 'https://www.youtube.com',
-    inputUrl: 'https://www.youtube.com',
+    title: 'Google',
+    url: 'https://www.google.com',
+    inputUrl: 'https://www.google.com',
     isLoading: false,
     canGoBack: false,
     canGoForward: false,
@@ -30,21 +22,21 @@ const INITIAL_TABS: Tab[] = [
 export function App() {
   const [tabs, setTabs] = useState<Tab[]>(INITIAL_TABS);
   const [activeTabId, setActiveTabId] = useState<string>('tab-1');
-  const [splitTabId, setSplitTabId] = useState<string>('tab-2');
+  const [splitTabId, setSplitTabId] = useState<string>('');
   const [isSplitActive, setIsSplitActive] = useState<boolean>(false);
   const [vramSaverActive, setVramSaverActive] = useState<boolean>(true);
-  const [showAiDock, setShowAiDock] = useState<boolean>(true);
+  const [showAiDock, setShowAiDock] = useState<boolean>(false);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
   const splitTab = tabs.find((t) => t.id === splitTabId);
 
   // New Tab handler
-  const handleNewTab = useCallback((defaultUrl = 'https://duckduckgo.com') => {
+  const handleNewTab = useCallback((defaultUrl = 'https://www.google.com') => {
     const newId = `tab-${Date.now()}`;
     const isAi = defaultUrl.includes('localhost') || defaultUrl.includes('127.0.0.1');
     const newTab: Tab = {
       id: newId,
-      title: isAi ? 'AI Server' : 'New Tab',
+      title: isAi ? 'AI Server' : (defaultUrl === 'https://www.google.com' ? 'Google' : 'New Tab'),
       url: defaultUrl,
       inputUrl: defaultUrl,
       isLoading: false,
@@ -80,14 +72,45 @@ export function App() {
             ...t,
             url: newUrl,
             inputUrl: newUrl,
-            title: isAi ? `Server (${newUrl.replace(/https?:\/\//, '')})` : newUrl,
-            isLoading: false,
+            title: isAi ? `Server (${newUrl.replace(/https?:\/\//, '')})` : (newUrl.includes('google.com') ? 'Google' : newUrl),
+            isLoading: true,
           };
         }
         return t;
       })
     );
   }, [activeTabId]);
+
+  // Reload handler
+  const handleReload = useCallback(async () => {
+    setTabs((prev) =>
+      prev.map((t) => (t.id === activeTabId ? { ...t, isLoading: true } : t))
+    );
+    try {
+      await invoke('reload_browser_view');
+    } catch (err) {
+      console.error('Reload error, fallback to navigate:', err);
+      handleNavigate(activeTab.url);
+    }
+  }, [activeTabId, activeTab.url, handleNavigate]);
+
+  // Back handler
+  const handleGoBack = useCallback(async () => {
+    try {
+      await invoke('go_back_browser_view');
+    } catch (err) {
+      console.error('Go back error:', err);
+    }
+  }, []);
+
+  // Forward handler
+  const handleGoForward = useCallback(async () => {
+    try {
+      await invoke('go_forward_browser_view');
+    } catch (err) {
+      console.error('Go forward error:', err);
+    }
+  }, []);
 
   // Open server from dock
   const handleOpenServer = useCallback((url: string, newTab = false) => {
@@ -97,6 +120,56 @@ export function App() {
       handleNavigate(url);
     }
   }, [handleNewTab, handleNavigate]);
+
+  // Listen for backend webview navigation & loading status events
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+    if (!isTauri) return;
+
+    listen<{
+      url?: string;
+      title?: string;
+      isLoading?: boolean;
+      canGoBack?: boolean;
+      canGoForward?: boolean;
+    }>('webview-status', (event) => {
+      const payload = event.payload;
+      setTabs((prev) =>
+        prev.map((t) => {
+          if (t.id === activeTabId) {
+            const newUrl =
+              payload.url && !payload.url.startsWith('data:text/html')
+                ? payload.url
+                : t.url;
+            let newTitle = t.title;
+            if (payload.title && !payload.title.includes('AuraView')) {
+              newTitle = payload.title;
+            } else if (newUrl !== t.url) {
+              newTitle = newUrl.includes('google.com') ? 'Google' : newUrl;
+            }
+
+            return {
+              ...t,
+              url: newUrl,
+              inputUrl: newUrl,
+              title: newTitle,
+              isLoading: payload.isLoading !== undefined ? payload.isLoading : t.isLoading,
+              canGoBack: payload.canGoBack !== undefined ? payload.canGoBack : true,
+              canGoForward: payload.canGoForward !== undefined ? payload.canGoForward : true,
+            };
+          }
+          return t;
+        })
+      );
+    }).then((fn) => {
+      unlisten = fn;
+    });
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [activeTabId]);
 
   // Keyboard Shortcuts
   useEffect(() => {
@@ -108,6 +181,9 @@ export function App() {
         } else if (e.key === 'w' || e.key === 'W') {
           e.preventDefault();
           handleCloseTab(activeTabId);
+        } else if (e.key === 'r' || e.key === 'R') {
+          e.preventDefault();
+          handleReload();
         } else if (e.key === '\\') {
           e.preventDefault();
           setIsSplitActive((prev) => !prev);
@@ -115,12 +191,15 @@ export function App() {
           e.preventDefault();
           setShowAiDock((prev) => !prev);
         }
+      } else if (e.key === 'F5') {
+        e.preventDefault();
+        handleReload();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeTabId, handleNewTab, handleCloseTab]);
+  }, [activeTabId, handleNewTab, handleCloseTab, handleReload]);
 
   return (
     <div className="flex flex-col h-screen w-screen bg-[#090c10] text-[#e4e7eb] overflow-hidden select-none">
@@ -136,19 +215,17 @@ export function App() {
       {/* 2. Navigation Bar */}
       <NavigationBar
         url={activeTab?.url || ''}
-        canGoBack={activeTab?.canGoBack || false}
-        canGoForward={activeTab?.canGoForward || false}
+        isLoading={activeTab?.isLoading || false}
+        canGoBack={activeTab?.canGoBack !== false}
+        canGoForward={activeTab?.canGoForward !== false}
         isSplitActive={isSplitActive}
         vramSaverActive={vramSaverActive}
         showAiDock={showAiDock}
         onNavigate={handleNavigate}
-        onGoBack={() => console.log('Back')}
-        onGoForward={() => console.log('Forward')}
-        onReload={() => {
-          const currentUrl = activeTab.url;
-          handleNavigate(currentUrl);
-        }}
-        onGoHome={() => handleNavigate('http://localhost:8188')}
+        onGoBack={handleGoBack}
+        onGoForward={handleGoForward}
+        onReload={handleReload}
+        onGoHome={() => handleNavigate('https://www.google.com')}
         onToggleSplit={() => {
           if (!isSplitActive && tabs.length > 1) {
             const otherTab = tabs.find((t) => t.id !== activeTabId);

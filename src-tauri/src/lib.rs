@@ -2,7 +2,7 @@ use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{
-    AppHandle, LogicalPosition, LogicalSize, Manager, Url, WebviewBuilder, WebviewUrl,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Url, WebviewBuilder, WebviewUrl,
 };
 
 static LAST_REQUESTED_URL: Mutex<String> = Mutex::new(String::new());
@@ -53,7 +53,7 @@ fn make_custom_error_url(failed_url: &str, error_code: &str) -> Url {
     let port = parsed.as_ref().and_then(|u| u.port()).unwrap_or(if parsed.as_ref().map(|u| u.scheme()) == Some("https") { 443 } else { 80 });
 
     let search_query = urlencoding_simple(&domain);
-    let search_url = format!("https://duckduckgo.com/?q={}", search_query);
+    let search_url = format!("https://www.google.com/search?q={}", search_query);
 
     let html = if is_local {
         format!(r##"<!DOCTYPE html>
@@ -289,7 +289,7 @@ fn make_custom_error_url(failed_url: &str, error_code: &str) -> Url {
         </svg>
         Retry Connection
       </button>
-      <a class="btn btn-secondary" href="https://duckduckgo.com">
+      <a class="btn btn-secondary" href="https://www.google.com">
         Home
       </a>
     </div>
@@ -542,7 +542,7 @@ fn make_custom_error_url(failed_url: &str, error_code: &str) -> Url {
           <circle cx="11" cy="11" r="8"></circle>
           <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
         </svg>
-        Search DuckDuckGo
+        Search Google
       </a>
       <a class="btn btn-secondary" href="{failed_url}">
         <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
@@ -550,7 +550,7 @@ fn make_custom_error_url(failed_url: &str, error_code: &str) -> Url {
         </svg>
         Try Again
       </a>
-      <a class="btn btn-secondary" href="https://duckduckgo.com">
+      <a class="btn btn-secondary" href="https://www.google.com">
         Home
       </a>
     </div>
@@ -670,6 +670,17 @@ fn app_open_devtools(app: AppHandle) {
     }
 }
 
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct WebviewStatusPayload {
+    pub url: Option<String>,
+    pub title: Option<String>,
+    pub is_loading: Option<bool>,
+    pub can_go_back: Option<bool>,
+    pub can_go_forward: Option<bool>,
+}
+
+
 #[tauri::command]
 fn navigate_browser_view(app: AppHandle, url: String) -> Result<(), String> {
     log_debug(&format!("navigate_browser_view to: {}", url));
@@ -678,6 +689,14 @@ fn navigate_browser_view(app: AppHandle, url: String) -> Result<(), String> {
     if let Ok(mut lock) = LAST_REQUESTED_URL.lock() {
         *lock = url.clone();
     }
+
+    let _ = app.emit("webview-status", WebviewStatusPayload {
+        url: Some(url.clone()),
+        title: None,
+        is_loading: Some(true),
+        can_go_back: None,
+        can_go_forward: None,
+    });
 
     if let Some(webview) = app.get_webview("browser-viewport") {
         let _ = webview.show();
@@ -729,6 +748,98 @@ fn navigate_browser_view(app: AppHandle, url: String) -> Result<(), String> {
     }
     Ok(())
 }
+#[tauri::command]
+fn reload_browser_view(app: AppHandle) -> Result<(), String> {
+    log_debug("reload_browser_view CALLED");
+    let _ = app.emit("webview-status", WebviewStatusPayload {
+        url: None,
+        title: None,
+        is_loading: Some(true),
+        can_go_back: None,
+        can_go_forward: None,
+    });
+
+    if let Some(webview) = app.get_webview("browser-viewport") {
+        let last_url = LAST_REQUESTED_URL.lock().unwrap().clone();
+        #[cfg(windows)]
+        {
+            let last_url_clone = last_url.clone();
+            let app_clone = app.clone();
+            let _ = webview.with_webview(move |platform_webview| {
+                unsafe {
+                    if let Ok(core) = platform_webview.controller().CoreWebView2() {
+                        let mut uri_p = windows_core::PWSTR::null();
+                        let mut is_data_err = false;
+                        if core.Source(&mut uri_p).is_ok() && !uri_p.is_null() {
+                            let s = uri_p.to_string().unwrap_or_default();
+                            if s.starts_with("data:text/html") {
+                                is_data_err = true;
+                            }
+                        }
+                        if is_data_err && !last_url_clone.is_empty() {
+                            log_debug(&format!("Reloading from error page, retrying: {}", last_url_clone));
+                            let _ = navigate_browser_view(app_clone, last_url_clone);
+                        } else {
+                            let _ = core.Reload();
+                        }
+                    }
+                }
+            });
+            return Ok(());
+        }
+        #[cfg(not(windows))]
+        let _ = webview.eval("window.location.reload()");
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn go_back_browser_view(app: AppHandle) -> Result<(), String> {
+    log_debug("go_back_browser_view CALLED");
+    if let Some(webview) = app.get_webview("browser-viewport") {
+        #[cfg(windows)]
+        {
+            let _ = webview.with_webview(move |platform_webview| {
+                unsafe {
+                    if let Ok(core) = platform_webview.controller().CoreWebView2() {
+                        let mut can_back = windows_core::BOOL(0);
+                        if core.CanGoBack(&mut can_back).is_ok() && can_back.as_bool() {
+                            let _ = core.GoBack();
+                        }
+                    }
+                }
+            });
+            return Ok(());
+        }
+        #[cfg(not(windows))]
+        let _ = webview.eval("window.history.back()");
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn go_forward_browser_view(app: AppHandle) -> Result<(), String> {
+    log_debug("go_forward_browser_view CALLED");
+    if let Some(webview) = app.get_webview("browser-viewport") {
+        #[cfg(windows)]
+        {
+            let _ = webview.with_webview(move |platform_webview| {
+                unsafe {
+                    if let Ok(core) = platform_webview.controller().CoreWebView2() {
+                        let mut can_fwd = windows_core::BOOL(0);
+                        if core.CanGoForward(&mut can_fwd).is_ok() && can_fwd.as_bool() {
+                            let _ = core.GoForward();
+                        }
+                    }
+                }
+            });
+            return Ok(());
+        }
+        #[cfg(not(windows))]
+        let _ = webview.eval("window.history.forward()");
+    }
+    Ok(())
+}
 
 #[tauri::command]
 fn update_browser_bounds(
@@ -759,15 +870,34 @@ pub fn run() {
                 log_debug(&format!("Found webview: {}", label));
             }
 
+            let app_handle = app.handle().clone();
+
             if let Some(window) = app.get_window("main") {
                 log_debug("Adding child webview browser-viewport to main window");
-                let initial_url = Url::parse("https://duckduckgo.com").unwrap();
+                let initial_url = Url::parse("https://www.google.com").unwrap();
+                let app_nav = app_handle.clone();
+                let app_load = app_handle.clone();
+                let app_title = app_handle.clone();
+
                 let builder = WebviewBuilder::new(
                     "browser-viewport",
                     WebviewUrl::External(initial_url),
                 )
-                .on_navigation(|url| {
+                .on_navigation(move |url| {
                     log_debug(&format!("[ON NAVIGATION] target: {}", url));
+                    let url_str = url.as_str().to_string();
+                    if !url_str.starts_with("data:text/html") {
+                        if let Ok(mut lock) = LAST_REQUESTED_URL.lock() {
+                            *lock = url_str.clone();
+                        }
+                    }
+                    let _ = app_nav.emit("webview-status", WebviewStatusPayload {
+                        url: Some(url_str),
+                        title: None,
+                        is_loading: Some(true),
+                        can_go_back: None,
+                        can_go_forward: None,
+                    });
                     true
                 })
                 .background_color(tauri::webview::Color(9, 12, 16, 255))
@@ -791,19 +921,39 @@ pub fn run() {
                     window.addEventListener('DOMContentLoaded', hideEdgeError);
                     setInterval(hideEdgeError, 250);
                 "#)
-                .on_page_load(|webview, payload| {
+                .on_page_load(move |webview, payload| {
                     log_debug(&format!("[PAGE LOAD] url: {}, event: {:?}", payload.url(), payload.event()));
-                    if payload.event() == tauri::webview::PageLoadEvent::Finished {
-                        let url_str = payload.url().as_str();
-                        if url_str.starts_with("chrome-error://") || url_str.starts_with("edge://chromewebdata") {
-                            let failed_url = LAST_REQUESTED_URL.lock().unwrap().clone();
-                            let display_url = if failed_url.is_empty() { "Unknown site".to_string() } else { failed_url };
-                            let err_url = make_custom_error_url(&display_url, "ERR_NAME_NOT_RESOLVED");
-                            let _ = webview.navigate(err_url);
+                    let url_str = payload.url().as_str().to_string();
+
+                    match payload.event() {
+                        tauri::webview::PageLoadEvent::Started => {
+                            let _ = app_load.emit("webview-status", WebviewStatusPayload {
+                                url: if !url_str.starts_with("data:text/html") { Some(url_str.clone()) } else { None },
+                                title: None,
+                                is_loading: Some(true),
+                                can_go_back: None,
+                                can_go_forward: None,
+                            });
+                        }
+                        tauri::webview::PageLoadEvent::Finished => {
+                            let _ = app_load.emit("webview-status", WebviewStatusPayload {
+                                url: if !url_str.starts_with("data:text/html") { Some(url_str.clone()) } else { None },
+                                title: None,
+                                is_loading: Some(false),
+                                can_go_back: None,
+                                can_go_forward: None,
+                            });
+
+                            if url_str.starts_with("chrome-error://") || url_str.starts_with("edge://chromewebdata") {
+                                let failed_url = LAST_REQUESTED_URL.lock().unwrap().clone();
+                                let display_url = if failed_url.is_empty() { "Unknown site".to_string() } else { failed_url };
+                                let err_url = make_custom_error_url(&display_url, "ERR_NAME_NOT_RESOLVED");
+                                let _ = webview.navigate(err_url);
+                            }
                         }
                     }
                 })
-                .on_document_title_changed(|webview, title| {
+                .on_document_title_changed(move |webview, title| {
                     log_debug(&format!("[TITLE CHANGED] title: {}", title));
                     let t_lower = title.to_lowercase();
                     if !t_lower.contains("auraview")
@@ -818,6 +968,14 @@ pub fn run() {
                         let display_url = if failed_url.is_empty() { "Unknown site".to_string() } else { failed_url };
                         let err_url = make_custom_error_url(&display_url, "ERR_CONNECTION_FAILED");
                         let _ = webview.navigate(err_url);
+                    } else if !title.is_empty() && !title.contains("AuraView") {
+                        let _ = app_title.emit("webview-status", WebviewStatusPayload {
+                            url: None,
+                            title: Some(title.clone()),
+                            is_loading: None,
+                            can_go_back: None,
+                            can_go_forward: None,
+                        });
                     }
                 });
 
@@ -856,8 +1014,12 @@ pub fn run() {
             app_start_dragging,
             app_open_devtools,
             navigate_browser_view,
+            reload_browser_view,
+            go_back_browser_view,
+            go_forward_browser_view,
             update_browser_bounds
         ])
         .run(tauri::generate_context!())
         .expect("error while running AuraView application");
 }
+

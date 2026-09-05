@@ -71,7 +71,7 @@ export const WebviewContainer: React.FC<WebviewContainerProps> = ({
       window.removeEventListener('resize', updateBounds);
       clearTimeout(timer);
     };
-  }, [activeTab.url, showAiDock, isTauri]);
+  }, [activeTab.id, activeTab.url, showAiDock, isTauri]);
 
   // If in browser dev preview mode
   if (!isTauri) {
