@@ -738,6 +738,7 @@ fn update_browser_bounds(
     width: f64,
     height: f64,
 ) -> Result<(), String> {
+    log_debug(&format!("update_browser_bounds: x={}, y={}, w={}, h={}", x, y, width, height));
     if let Some(webview) = app.get_webview("browser-viewport") {
         let _ = webview.set_position(LogicalPosition::new(x, y));
         let _ = webview.set_size(LogicalSize::new(width, height));
