@@ -18,25 +18,45 @@ export const WebviewContainer: React.FC<WebviewContainerProps> = ({
   showAiDock,
 }) => {
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  const containerRef = React.useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!isTauri) return;
 
-    const topBarHeight = showAiDock ? 118 : 80;
-    const width = window.innerWidth;
-    const height = Math.max(100, window.innerHeight - topBarHeight);
+    const updateBounds = async () => {
+      let x = 0;
+      let y = showAiDock ? 118 : 80;
+      let width = window.innerWidth;
+      let height = Math.max(100, window.innerHeight - y);
+
+      if (containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          x = rect.left;
+          y = rect.top;
+          width = rect.width;
+          height = rect.height;
+        }
+      }
+
+      try {
+        await invoke('update_browser_bounds', {
+          x: Number(x),
+          y: Number(y),
+          width: Number(width),
+          height: Number(height),
+        });
+      } catch (err) {
+        console.error('Resize error:', err);
+      }
+    };
 
     const syncWebview = async () => {
       try {
         await invoke('navigate_browser_view', {
           url: activeTab.url,
         });
-        await invoke('update_browser_bounds', {
-          x: 0.0,
-          y: Number(topBarHeight),
-          width: Number(width),
-          height: Number(height),
-        });
+        await updateBounds();
       } catch (err) {
         console.error('Webview navigation error:', err);
       }
@@ -44,23 +64,13 @@ export const WebviewContainer: React.FC<WebviewContainerProps> = ({
 
     syncWebview();
 
-    const handleResize = async () => {
-      try {
-        const newWidth = window.innerWidth;
-        const newHeight = Math.max(100, window.innerHeight - topBarHeight);
-        await invoke('update_browser_bounds', {
-          x: 0.0,
-          y: Number(topBarHeight),
-          width: Number(newWidth),
-          height: Number(newHeight),
-        });
-      } catch (err) {
-        console.error('Resize error:', err);
-      }
-    };
+    window.addEventListener('resize', updateBounds);
+    const timer = setTimeout(updateBounds, 50);
 
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('resize', updateBounds);
+      clearTimeout(timer);
+    };
   }, [activeTab.url, showAiDock, isTauri]);
 
   // If in browser dev preview mode
@@ -95,7 +105,7 @@ export const WebviewContainer: React.FC<WebviewContainerProps> = ({
 
   // In native Tauri mode, the child WebView2 surface is positioned directly over this area
   return (
-    <div className="flex-1 w-full h-full flex bg-[#090c10] relative">
+    <div ref={containerRef} className="flex-1 w-full h-full flex bg-[#090c10] relative">
       <div className="w-full h-full flex flex-col items-center justify-center text-gray-600 select-none pointer-events-none">
         <div className="flex items-center gap-2 text-xs font-mono text-gray-500">
           {activeTab.isAiServer ? <Server className="w-4 h-4 text-purple-500" /> : <Globe className="w-4 h-4 text-cyan-500" />}
