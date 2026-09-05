@@ -1,14 +1,15 @@
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
 /// Check if a local port is currently open and reachable
 #[tauri::command]
 fn check_port_active(port: u16) -> bool {
-    let address = format!("127.0.0.1:{}", port);
-    TcpStream::connect_timeout(
-        &address.parse().unwrap(),
-        Duration::from_millis(250)
-    ).is_ok()
+    let address: Result<SocketAddr, _> = format!("127.0.0.1:{}", port).parse();
+    if let Ok(addr) = address {
+        TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
+    } else {
+        false
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
