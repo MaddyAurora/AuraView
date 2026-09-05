@@ -53,39 +53,9 @@ Modern browsers like Chrome and Edge frequently consume **1 GB to 3+ GB of RAM**
 
 ---
 
-## 🚀 Getting Started
 
-### Prerequisites
-* [Node.js](https://nodejs.org/) (v18 or higher)
-* [Rust](https://www.rust-lang.org/) (Required for local native `.exe` compilation):
-  ```powershell
-  winget install Rustlang.Rustup
-  ```
-
-### 1. Installation
-```powershell
-git clone https://github.com/MaddyAurora/AuraView.git
-cd AuraView
-npm install
-```
-
-### 2. Frontend Development Mode (Runs in browser preview)
-```powershell
-npm run dev
-```
-
-### 3. Native Desktop Development (Runs with Tauri v2)
-```powershell
-npm run tauri dev
-```
-
-### 4. Build Release Executable
-```powershell
-npm run tauri build
-```
-The compiled `.exe` installer will be located in:
-`src-tauri/target/release/bundle/`
-
+### Installation
+Just download and install the latest binary executable at https://github.com/MaddyAurora/AuraView/releases
 ---
 
 ## 📦 Automated GitHub Releases
