@@ -4,12 +4,10 @@ use tauri::{
     AppHandle, LogicalPosition, LogicalSize, Manager, Url, WebviewBuilder, WebviewUrl,
 };
 
+#[allow(unused_variables)]
 fn log_debug(msg: &str) {
-    use std::io::Write;
-    let path = "b:/AIB/AuraView/auraview_debug.log";
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(f, "[DEBUG] {}", msg);
-    }
+    #[cfg(debug_assertions)]
+    eprintln!("[DEBUG] {}", msg);
 }
 
 /// Check if a local port is currently open and reachable
