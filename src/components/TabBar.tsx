@@ -1,6 +1,8 @@
 import React from 'react';
 import { Tab } from '../types/browser';
 import { Plus, X, Server, Globe, Loader2, Minus, Square } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 
 interface TabBarProps {
   tabs: Tab[];
@@ -17,36 +19,61 @@ export const TabBar: React.FC<TabBarProps> = ({
   onCloseTab,
   onNewTab,
 }) => {
-  const handleMinimize = async () => {
+  const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+  const handleStartDrag = async (e: React.MouseEvent) => {
+    if (e.button === 0 && isTauri) {
+      try {
+        await getCurrentWindow().startDragging();
+      } catch (err) {
+        console.log('Drag error:', err);
+      }
+    }
+  };
+
+  const handleMinimize = async (e: React.MouseEvent) => {
+    e.stopPropagation();
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
       await invoke('app_minimize');
-    } catch (err) {
-      console.log('Window minimize:', err);
+    } catch {
+      try {
+        await getCurrentWindow().minimize();
+      } catch (err) {
+        console.log('Minimize error:', err);
+      }
     }
   };
 
-  const handleToggleMaximize = async () => {
+  const handleToggleMaximize = async (e: React.MouseEvent) => {
+    e.stopPropagation();
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
       await invoke('app_toggle_maximize');
-    } catch (err) {
-      console.log('Window toggle maximize:', err);
+    } catch {
+      try {
+        await getCurrentWindow().toggleMaximize();
+      } catch (err) {
+        console.log('Maximize error:', err);
+      }
     }
   };
 
-  const handleClose = async () => {
+  const handleClose = async (e: React.MouseEvent) => {
+    e.stopPropagation();
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
       await invoke('app_close');
-    } catch (err) {
-      console.log('Window close:', err);
+    } catch {
+      try {
+        await getCurrentWindow().close();
+      } catch (err) {
+        console.log('Close error:', err);
+      }
     }
   };
 
   return (
     <div
-      className="flex items-center bg-[#090c10] border-b border-[#1f2937] pl-2 pr-0 select-none h-10 gap-1 overflow-hidden"
+      className="flex items-center bg-[#090c10] border-b border-[#1f2937] pl-2 pr-0 select-none h-10 overflow-hidden"
+      onMouseDown={handleStartDrag}
       data-tauri-drag-region
     >
       {/* Brand Icon & Name */}
@@ -54,17 +81,17 @@ export const TabBar: React.FC<TabBarProps> = ({
         className="flex items-center gap-2 px-2.5 py-1 text-xs font-semibold tracking-wider text-purple-400 shrink-0 cursor-default"
         data-tauri-drag-region
       >
-        <div className="w-4 h-4 rounded-full bg-gradient-to-tr from-purple-600 to-cyan-400 flex items-center justify-center shadow-sm shadow-purple-500/30">
+        <div className="w-4 h-4 rounded-full bg-gradient-to-tr from-purple-600 to-cyan-400 flex items-center justify-center shadow-sm shadow-purple-500/30 pointer-events-none">
           <div className="w-1.5 h-1.5 rounded-full bg-[#090c10]"></div>
         </div>
-        <span className="hidden sm:inline bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent font-bold tracking-tight">
+        <span className="hidden sm:inline bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent font-bold tracking-tight pointer-events-none">
           AuraView
         </span>
       </div>
 
-      {/* Tabs Container */}
+      {/* Tabs Container (Scrollbar strictly hidden to remove vertical lines) */}
       <div
-        className="flex items-center flex-1 gap-1 overflow-x-auto h-full no-scrollbar pt-1"
+        className="flex items-center gap-1 overflow-x-auto h-full pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         data-tauri-drag-region
       >
         {tabs.map((tab) => {
@@ -75,6 +102,7 @@ export const TabBar: React.FC<TabBarProps> = ({
             <div
               key={tab.id}
               onClick={() => onSelectTab(tab.id)}
+              onMouseDown={(e) => e.stopPropagation()}
               className={`group relative flex items-center gap-2 px-3 py-1.5 h-9 min-w-[120px] max-w-[220px] rounded-t-md text-xs font-medium cursor-pointer transition-all border-t border-x ${
                 isActive
                   ? 'bg-[#151e28] text-gray-100 border-[#374151] shadow-sm'
@@ -98,6 +126,7 @@ export const TabBar: React.FC<TabBarProps> = ({
               {/* Close Button */}
               <button
                 onClick={(e) => onCloseTab(tab.id, e)}
+                onMouseDown={(e) => e.stopPropagation()}
                 className={`p-0.5 rounded-sm hover:bg-gray-700/60 transition-opacity ${
                   isActive ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-70 hover:!opacity-100'
                 }`}
@@ -117,38 +146,46 @@ export const TabBar: React.FC<TabBarProps> = ({
         {/* New Tab Button */}
         <button
           onClick={onNewTab}
-          className="p-1.5 rounded-md text-gray-400 hover:text-gray-100 hover:bg-[#1f2937]/50 transition-colors ml-1"
+          onMouseDown={(e) => e.stopPropagation()}
+          className="p-1.5 rounded-md text-gray-400 hover:text-gray-100 hover:bg-[#1f2937]/50 transition-colors ml-1 shrink-0"
           title="New Tab (Ctrl+T)"
         >
           <Plus className="w-4 h-4" />
         </button>
-
-        {/* Draggable space after tabs */}
-        <div className="flex-1 h-full min-w-[20px]" data-tauri-drag-region />
       </div>
 
-      {/* Integrated Native Window Controls */}
-      <div className="flex items-center h-full select-none shrink-0" data-tauri-drag-region>
+      {/* Draggable space after tabs */}
+      <div
+        className="flex-1 h-full min-w-[20px] cursor-default"
+        onMouseDown={handleStartDrag}
+        data-tauri-drag-region
+      />
+
+      {/* Window Controls (Strictly NO drag-region on buttons, click event isolated) */}
+      <div className="flex items-center h-full select-none shrink-0 z-50">
         <button
           onClick={handleMinimize}
-          className="h-10 w-11 flex items-center justify-center hover:bg-[#1a2533] text-gray-400 hover:text-white transition-colors"
+          onMouseDown={(e) => e.stopPropagation()}
+          className="h-10 w-11 flex items-center justify-center hover:bg-[#1a2533] text-gray-400 hover:text-white transition-colors cursor-pointer"
           title="Minimize"
         >
-          <Minus className="w-3.5 h-3.5" />
+          <Minus className="w-3.5 h-3.5 pointer-events-none" />
         </button>
         <button
           onClick={handleToggleMaximize}
-          className="h-10 w-11 flex items-center justify-center hover:bg-[#1a2533] text-gray-400 hover:text-white transition-colors"
+          onMouseDown={(e) => e.stopPropagation()}
+          className="h-10 w-11 flex items-center justify-center hover:bg-[#1a2533] text-gray-400 hover:text-white transition-colors cursor-pointer"
           title="Maximize / Restore"
         >
-          <Square className="w-3 h-3" />
+          <Square className="w-3 h-3 pointer-events-none" />
         </button>
         <button
           onClick={handleClose}
-          className="h-10 w-11 flex items-center justify-center hover:bg-[#e81123] text-gray-400 hover:text-white transition-colors"
+          onMouseDown={(e) => e.stopPropagation()}
+          className="h-10 w-11 flex items-center justify-center hover:bg-[#e81123] text-gray-400 hover:text-white transition-colors cursor-pointer"
           title="Close"
         >
-          <X className="w-3.5 h-3.5" />
+          <X className="w-3.5 h-3.5 pointer-events-none" />
         </button>
       </div>
     </div>

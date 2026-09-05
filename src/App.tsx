@@ -169,6 +169,7 @@ export function App() {
         splitTab={splitTab}
         isSplitActive={isSplitActive}
         vramSaverActive={vramSaverActive}
+        showAiDock={showAiDock}
       />
     </div>
   );
