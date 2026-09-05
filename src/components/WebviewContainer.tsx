@@ -19,7 +19,6 @@ export const WebviewContainer: React.FC<WebviewContainerProps> = ({
 }) => {
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
-  // Coordinate native child Webviews via Tauri IPC
   useEffect(() => {
     if (!isTauri) return;
 
@@ -27,40 +26,23 @@ export const WebviewContainer: React.FC<WebviewContainerProps> = ({
     const width = window.innerWidth;
     const height = Math.max(100, window.innerHeight - topBarHeight);
 
-    const updateWebviews = async () => {
+    const syncWebview = async () => {
       try {
-        if (isSplitActive && splitTab) {
-          const halfWidth = width / 2.0;
-          await invoke('navigate_browser_view', {
-            url: activeTab.url,
-            x: 0.0,
-            y: Number(topBarHeight),
-            width: halfWidth,
-            height: Number(height),
-          });
-          await invoke('navigate_split_view', {
-            url: splitTab.url,
-            x: halfWidth,
-            y: Number(topBarHeight),
-            width: halfWidth,
-            height: Number(height),
-          });
-        } else {
-          await invoke('navigate_browser_view', {
-            url: activeTab.url,
-            x: 0.0,
-            y: Number(topBarHeight),
-            width: Number(width),
-            height: Number(height),
-          });
-          await invoke('close_split_view');
-        }
+        await invoke('navigate_browser_view', {
+          url: activeTab.url,
+        });
+        await invoke('update_browser_bounds', {
+          x: 0.0,
+          y: Number(topBarHeight),
+          width: Number(width),
+          height: Number(height),
+        });
       } catch (err) {
-        console.error('Tauri webview navigation error:', err);
+        console.error('Webview navigation error:', err);
       }
     };
 
-    updateWebviews();
+    syncWebview();
 
     const handleResize = async () => {
       try {
@@ -71,7 +53,6 @@ export const WebviewContainer: React.FC<WebviewContainerProps> = ({
           y: Number(topBarHeight),
           width: Number(newWidth),
           height: Number(newHeight),
-          splitActive: isSplitActive,
         });
       } catch (err) {
         console.error('Resize error:', err);
@@ -80,9 +61,9 @@ export const WebviewContainer: React.FC<WebviewContainerProps> = ({
 
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, [activeTab.url, splitTab?.url, isSplitActive, showAiDock, isTauri]);
+  }, [activeTab.url, showAiDock, isTauri]);
 
-  // If in standard web development mode (e.g. previewing via Vite in a browser)
+  // If in browser dev preview mode
   if (!isTauri) {
     return (
       <div className="flex-1 w-full h-full flex overflow-hidden bg-[#090c10]">
@@ -115,7 +96,6 @@ export const WebviewContainer: React.FC<WebviewContainerProps> = ({
   // In native Tauri mode, the child WebView2 surface is positioned directly over this area
   return (
     <div className="flex-1 w-full h-full flex bg-[#090c10] relative">
-      {/* Background canvas while webview loads */}
       <div className="w-full h-full flex flex-col items-center justify-center text-gray-600 select-none pointer-events-none">
         <div className="flex items-center gap-2 text-xs font-mono text-gray-500">
           {activeTab.isAiServer ? <Server className="w-4 h-4 text-purple-500" /> : <Globe className="w-4 h-4 text-cyan-500" />}
