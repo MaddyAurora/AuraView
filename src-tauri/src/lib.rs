@@ -888,11 +888,11 @@ pub fn run() {
                     let url_str = url.as_str().to_string();
                     if !url_str.starts_with("data:text/html") {
                         if let Ok(mut lock) = LAST_REQUESTED_URL.lock() {
-                            *lock = url_str.clone();
+                            *lock = url_str;
                         }
                     }
                     let _ = app_nav.emit("webview-status", WebviewStatusPayload {
-                        url: Some(url_str),
+                        url: None,
                         title: None,
                         is_loading: Some(true),
                         can_go_back: None,
@@ -914,7 +914,16 @@ pub fn run() {
                     window.addEventListener('DOMContentLoaded', setDark);
 
                     const hideEdgeError = () => {
-                        if (!document.title.includes("AuraView") && (document.title.includes("can't reach this page") || (document.body && document.body.innerText.includes("Microsoft Edge") && document.body.innerText.includes("ERR_")))) {
+                        const t = (document.title || '').toLowerCase();
+                        const isEdgeTitle = t === "can't reach this page"
+                            || t === "cannot reach this page"
+                            || t.startsWith("hmmm… can't reach this page")
+                            || t.startsWith("hmmm... can't reach this page")
+                            || t === "hmmm… can’t reach this page";
+                        const isEdgeBody = document.body && document.body.innerText
+                            && document.body.innerText.includes("Microsoft Edge")
+                            && document.body.innerText.includes("ERR_");
+                        if (!document.title.includes("AuraView") && (isEdgeTitle || isEdgeBody)) {
                             document.documentElement.style.display = 'none';
                         }
                     };
@@ -956,14 +965,16 @@ pub fn run() {
                 .on_document_title_changed(move |webview, title| {
                     log_debug(&format!("[TITLE CHANGED] title: {}", title));
                     let t_lower = title.to_lowercase();
-                    if !t_lower.contains("auraview")
-                        && (t_lower.contains("can't reach this page")
-                            || t_lower.contains("cannot reach this page")
-                            || t_lower.starts_with("hmmm")
-                            || t_lower.contains("err_name_not_resolved")
-                            || t_lower.contains("err_connection_refused")
-                            || t_lower.contains("err_internet_disconnected"))
-                    {
+                    let is_edge_err_title = t_lower == "can't reach this page"
+                        || t_lower == "cannot reach this page"
+                        || t_lower.starts_with("hmmm… can't reach this page")
+                        || t_lower.starts_with("hmmm... can't reach this page")
+                        || t_lower == "hmmm… can’t reach this page"
+                        || t_lower.contains("err_name_not_resolved")
+                        || t_lower.contains("err_connection_refused")
+                        || t_lower.contains("err_internet_disconnected");
+
+                    if !t_lower.contains("auraview") && is_edge_err_title {
                         let failed_url = LAST_REQUESTED_URL.lock().unwrap().clone();
                         let display_url = if failed_url.is_empty() { "Unknown site".to_string() } else { failed_url };
                         let err_url = make_custom_error_url(&display_url, "ERR_CONNECTION_FAILED");

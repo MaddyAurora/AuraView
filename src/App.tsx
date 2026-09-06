@@ -26,60 +26,96 @@ export function App() {
   const [isSplitActive, setIsSplitActive] = useState<boolean>(false);
   const [vramSaverActive, setVramSaverActive] = useState<boolean>(true);
   const [showAiDock, setShowAiDock] = useState<boolean>(false);
+  const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
   const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
   const splitTab = tabs.find((t) => t.id === splitTabId);
 
+  // Tab select handler
+  const handleSelectTab = useCallback(
+    (id: string) => {
+      if (id === activeTabId) return;
+      setActiveTabId(id);
+      const targetTab = tabs.find((t) => t.id === id);
+      if (targetTab && isTauri) {
+        invoke('navigate_browser_view', { url: targetTab.url }).catch(console.error);
+      }
+    },
+    [activeTabId, tabs, isTauri]
+  );
+
   // New Tab handler
-  const handleNewTab = useCallback((defaultUrl = 'https://www.google.com') => {
-    const newId = `tab-${Date.now()}`;
-    const isAi = defaultUrl.includes('localhost') || defaultUrl.includes('127.0.0.1');
-    const newTab: Tab = {
-      id: newId,
-      title: isAi ? 'AI Server' : (defaultUrl === 'https://www.google.com' ? 'Google' : 'New Tab'),
-      url: defaultUrl,
-      inputUrl: defaultUrl,
-      isLoading: false,
-      canGoBack: false,
-      canGoForward: false,
-      isAiServer: isAi,
-    };
-    setTabs((prev) => [...prev, newTab]);
-    setActiveTabId(newId);
-  }, []);
+  const handleNewTab = useCallback(
+    (defaultUrl = 'https://www.google.com') => {
+      const newId = `tab-${Date.now()}`;
+      const isAi = defaultUrl.includes('localhost') || defaultUrl.includes('127.0.0.1');
+      const newTab: Tab = {
+        id: newId,
+        title: isAi ? 'AI Server' : defaultUrl === 'https://www.google.com' ? 'Google' : 'New Tab',
+        url: defaultUrl,
+        inputUrl: defaultUrl,
+        isLoading: true,
+        canGoBack: false,
+        canGoForward: false,
+        isAiServer: isAi,
+      };
+      setTabs((prev) => [...prev, newTab]);
+      setActiveTabId(newId);
+      if (isTauri) {
+        invoke('navigate_browser_view', { url: defaultUrl }).catch(console.error);
+      }
+    },
+    [isTauri]
+  );
 
   // Close Tab handler
-  const handleCloseTab = useCallback((id: string, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
-    setTabs((prev) => {
-      if (prev.length <= 1) return prev; // Keep at least one tab
-      const nextTabs = prev.filter((t) => t.id !== id);
-      if (id === activeTabId) {
-        const nextActive = nextTabs[nextTabs.length - 1];
-        setActiveTabId(nextActive.id);
-      }
-      return nextTabs;
-    });
-  }, [activeTabId]);
+  const handleCloseTab = useCallback(
+    (id: string, e?: React.MouseEvent) => {
+      if (e) e.stopPropagation();
+      setTabs((prev) => {
+        if (prev.length <= 1) return prev; // Keep at least one tab
+        const nextTabs = prev.filter((t) => t.id !== id);
+        if (id === activeTabId) {
+          const nextActive = nextTabs[nextTabs.length - 1];
+          setActiveTabId(nextActive.id);
+          if (isTauri) {
+            invoke('navigate_browser_view', { url: nextActive.url }).catch(console.error);
+          }
+        }
+        return nextTabs;
+      });
+    },
+    [activeTabId, isTauri]
+  );
 
   // Navigate Tab URL
-  const handleNavigate = useCallback((newUrl: string) => {
-    setTabs((prev) =>
-      prev.map((t) => {
-        if (t.id === activeTabId) {
-          const isAi = newUrl.includes('localhost') || newUrl.includes('127.0.0.1');
-          return {
-            ...t,
-            url: newUrl,
-            inputUrl: newUrl,
-            title: isAi ? `Server (${newUrl.replace(/https?:\/\//, '')})` : (newUrl.includes('google.com') ? 'Google' : newUrl),
-            isLoading: true,
-          };
-        }
-        return t;
-      })
-    );
-  }, [activeTabId]);
+  const handleNavigate = useCallback(
+    (newUrl: string) => {
+      setTabs((prev) =>
+        prev.map((t) => {
+          if (t.id === activeTabId) {
+            const isAi = newUrl.includes('localhost') || newUrl.includes('127.0.0.1');
+            return {
+              ...t,
+              url: newUrl,
+              inputUrl: newUrl,
+              title: isAi
+                ? `Server (${newUrl.replace(/https?:\/\//, '')})`
+                : newUrl.includes('google.com')
+                ? 'Google'
+                : newUrl,
+              isLoading: true,
+            };
+          }
+          return t;
+        })
+      );
+      if (isTauri) {
+        invoke('navigate_browser_view', { url: newUrl }).catch(console.error);
+      }
+    },
+    [activeTabId, isTauri]
+  );
 
   // Reload handler
   const handleReload = useCallback(async () => {
@@ -207,7 +243,7 @@ export function App() {
       <TabBar
         tabs={tabs}
         activeTabId={activeTabId}
-        onSelectTab={setActiveTabId}
+        onSelectTab={handleSelectTab}
         onCloseTab={handleCloseTab}
         onNewTab={() => handleNewTab()}
       />

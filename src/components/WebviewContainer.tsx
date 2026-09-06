@@ -51,18 +51,7 @@ export const WebviewContainer: React.FC<WebviewContainerProps> = ({
       }
     };
 
-    const syncWebview = async () => {
-      try {
-        await invoke('navigate_browser_view', {
-          url: activeTab.url,
-        });
-        await updateBounds();
-      } catch (err) {
-        console.error('Webview navigation error:', err);
-      }
-    };
-
-    syncWebview();
+    updateBounds();
 
     window.addEventListener('resize', updateBounds);
     const timer = setTimeout(updateBounds, 50);
@@ -71,7 +60,7 @@ export const WebviewContainer: React.FC<WebviewContainerProps> = ({
       window.removeEventListener('resize', updateBounds);
       clearTimeout(timer);
     };
-  }, [activeTab.id, activeTab.url, showAiDock, isTauri]);
+  }, [showAiDock, isTauri]);
 
   // If in browser dev preview mode
   if (!isTauri) {

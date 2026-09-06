@@ -48,10 +48,13 @@ export const NavigationBar: React.FC<NavigationBarProps> = ({
   onToggleAiDock,
 }) => {
   const [inputValue, setInputValue] = useState(url);
+  const [isFocused, setIsFocused] = useState(false);
 
   useEffect(() => {
-    setInputValue(url);
-  }, [url]);
+    if (!isFocused) {
+      setInputValue(url);
+    }
+  }, [url, isFocused]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -139,7 +142,11 @@ export const NavigationBar: React.FC<NavigationBarProps> = ({
             type="text"
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
-            onFocus={(e) => e.target.select()}
+            onFocus={(e) => {
+              setIsFocused(true);
+              e.target.select();
+            }}
+            onBlur={() => setIsFocused(false)}
             placeholder="Enter AI port (e.g. 8188), URL (youtube.com), or search..."
             className="w-full bg-transparent text-gray-100 text-xs focus:outline-none placeholder-gray-500"
           />
