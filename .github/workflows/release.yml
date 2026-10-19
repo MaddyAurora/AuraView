@@ -15,7 +15,7 @@ jobs:
       matrix:
         include:
           - platform: 'windows-latest'
-            args: ''
+            args: '--bundles nsis,msi'
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -34,6 +34,14 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Read release notes
+        id: release_notes
+        shell: pwsh
+        run: |
+          "body<<AURAVIEW_RELEASE_NOTES" >> $env:GITHUB_OUTPUT
+          Get-Content -Raw .github/RELEASE_NOTES.md >> $env:GITHUB_OUTPUT
+          "AURAVIEW_RELEASE_NOTES" >> $env:GITHUB_OUTPUT
+
       - name: Build Tauri Desktop App
         uses: tauri-apps/tauri-action@v0
         env:
@@ -41,7 +49,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'AuraView v__VERSION__'
-          releaseBody: 'See the assets below to download and install AuraView.'
+          releaseBody: ${{ steps.release_notes.outputs.body }}
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
