@@ -6,6 +6,81 @@
   color-scheme: dark;
 }
 
+.browser-tab-strip {
+  flex: 0 1 auto;
+  transition: width 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Keep page identities stable when pairs separate; size each page to its title
+   and ease width changes as titles or the available space change. */
+.browser-tab-page {
+  width: var(--tab-width, 176px);
+  max-width: 176px;
+  touch-action: none;
+  transition-property: width, margin-right, border-radius, background-color, color, border-color, box-shadow;
+  transition-duration: 200ms;
+  transition-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
+  animation: browser-tab-enter 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Collapse the unused close-button slot before the chain. When the pair
+   separates, the slot grows with its tab so the title keeps its space. */
+.browser-tab-close {
+  width: 1rem;
+  padding: 0.125rem;
+  overflow: hidden;
+  transition: width 200ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    padding 200ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    margin-left 200ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 150ms;
+}
+
+.browser-tab-close[data-pair-hidden='true'] {
+  width: 0;
+  padding-left: 0;
+  padding-right: 0;
+  margin-left: -0.5rem;
+}
+
+/* Bridge the space above each tab to the screen edge when maximized.
+   This transparent hit area preserves the tab's visible shape and also
+   forwards pointer presses to its normal selection/reordering handlers. */
+.browser-tab-strip[data-maximized='true'] .browser-tab-page::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -8px;
+  height: 12px;
+}
+
+.browser-tab-strip[data-tab-reordering='true'] .browser-tab-page {
+  width: var(--tab-drag-width);
+  max-width: none;
+  transition-property: transform;
+  transition-duration: 150ms;
+  will-change: transform;
+}
+
+.browser-tab-strip .browser-tab-page[data-tab-dragging='true'] {
+  z-index: 20;
+  cursor: grabbing;
+  transition: none;
+  box-shadow: 0 -1px 0 rgb(34 211 238 / 0.6), 0 3px 12px rgb(0 0 0 / 0.45);
+}
+
+/* Only newly created pages enter; separating a pair reuses both existing tabs. */
+@keyframes browser-tab-enter {
+  from { width: 0; padding-left: 0; padding-right: 0; opacity: 0; overflow: hidden; }
+  to { width: var(--tab-width, 176px); padding-left: 0.75rem; padding-right: 0.75rem; opacity: 1; overflow: hidden; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .browser-tab-strip,
+  .browser-tab-close,
+  .browser-tab-page,
+  .browser-tab-strip[data-tab-reordering='true'] .browser-tab-page { animation: none; transition: none; }
+}
+
 body {
   margin: 0;
   padding: 0;

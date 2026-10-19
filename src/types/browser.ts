@@ -1,3 +1,10 @@
+export type BrowserPane = 'primary' | 'secondary';
+
+export interface BrowserViewRef {
+  tabId: string;
+  pane: BrowserPane;
+}
+
 export interface Tab {
   id: string;
   title: string;
@@ -8,6 +15,11 @@ export interface Tab {
   canGoBack: boolean;
   canGoForward: boolean;
   isAiServer?: boolean;
+  splitEnabled?: boolean;
+  splitReversed?: boolean;
+  splitRatio?: number;
+  split?: Tab;
+  view?: BrowserViewRef;
 }
 
 export interface AIServerBookmark {
@@ -28,14 +40,6 @@ export const DEFAULT_AI_SERVERS: AIServerBookmark[] = [
     badge: 'Node / Diffusion',
     color: 'from-amber-500 to-orange-600',
     description: 'Local node-based Stable Diffusion & FLUX workflow generator',
-  },
-  {
-    id: 'gradio',
-    name: 'Gradio / WebUI',
-    port: 7860,
-    badge: 'Gradio ML',
-    color: 'from-orange-500 to-amber-600',
-    description: 'Automatic1111, SD-Forge, or custom Gradio AI apps',
   },
   {
     id: 'ollama-webui',
@@ -60,13 +64,5 @@ export const DEFAULT_AI_SERVERS: AIServerBookmark[] = [
     badge: 'AI Browser',
     color: 'from-purple-500 to-indigo-600',
     description: 'Autonomous AI browser & model runner dashboard',
-  },
-  {
-    id: 'joycaption',
-    name: 'JoyCaption',
-    port: 7861,
-    badge: 'Vision / Caption',
-    color: 'from-pink-500 to-rose-600',
-    description: 'Vision-language image captioning server',
   },
 ];

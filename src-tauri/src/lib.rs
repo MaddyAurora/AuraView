@@ -1,11 +1,122 @@
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-use std::sync::Mutex;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Url, WebviewBuilder, WebviewUrl,
 };
 
-static LAST_REQUESTED_URL: Mutex<String> = Mutex::new(String::new());
+struct BrowserState {
+    last_requested_url: String,
+    offline_retry_target: Option<Url>,
+    generation: u64,
+    visible: bool,
+}
+
+impl BrowserState {
+    const fn new(visible: bool) -> Self {
+        Self { last_requested_url: String::new(), offline_retry_target: None, generation: 0, visible }
+    }
+}
+
+#[derive(Default)]
+struct BrowserRegistry {
+    states: HashMap<(String, &'static str), Arc<Mutex<BrowserState>>>,
+    closed_views: HashSet<(String, &'static str)>,
+}
+
+static REGISTRY: OnceLock<Mutex<BrowserRegistry>> = OnceLock::new();
+static LAYOUT_LOCK: Mutex<()> = Mutex::new(());
+
+fn registry() -> &'static Mutex<BrowserRegistry> {
+    REGISTRY.get_or_init(|| Mutex::new(BrowserRegistry::default()))
+}
+
+fn pane_details(pane: Option<&str>) -> Result<(&'static str, &'static str), String> {
+    match pane {
+        None | Some("primary") => Ok(("primary", "browser-viewport")),
+        Some("secondary") => Ok(("secondary", "browser-split")),
+        _ => Err("Unknown browser pane".to_string()),
+    }
+}
+
+fn browser_label(tab_id: &str, pane: &'static str) -> Result<String, String> {
+    if tab_id.is_empty() || tab_id.len() > 80
+        || !tab_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_') {
+        return Err("Invalid browser tab identifier".to_string());
+    }
+    let (_, prefix) = pane_details(Some(pane))?;
+    Ok(format!("{}-{}", prefix, tab_id))
+}
+
+fn browser_state(tab_id: &str, pane: &'static str) -> Arc<Mutex<BrowserState>> {
+    registry().lock().unwrap().states.entry((tab_id.to_string(), pane))
+        .or_insert_with(|| Arc::new(Mutex::new(BrowserState::new(false)))).clone()
+}
+
+fn local_server_addresses(url: &Url) -> Option<Vec<SocketAddr>> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let port = url.port_or_known_default()?;
+    let host = url.host_str()?.trim_matches(['[', ']']);
+    if host == "localhost" {
+        return Some(vec![
+            SocketAddr::from(([127, 0, 0, 1], port)),
+            SocketAddr::new(std::net::Ipv6Addr::LOCALHOST.into(), port),
+        ]);
+    }
+    let ip: std::net::IpAddr = host.parse().ok()?;
+    ip.is_loopback().then(|| vec![SocketAddr::new(ip, port)])
+}
+
+fn local_server_is_online(url: &Url) -> bool {
+    local_server_addresses(url).map(|addresses| {
+        addresses.iter().any(|address| {
+            TcpStream::connect_timeout(address, Duration::from_millis(250)).is_ok()
+        })
+    }).unwrap_or(false)
+}
+
+fn retry_target(offline_page: &Url, requested_url: &str) -> Option<Url> {
+    if !offline_page.as_str().starts_with("data:text/html") {
+        return None;
+    }
+    let target = Url::parse(requested_url).ok()?;
+    local_server_addresses(&target)?;
+    Some(target)
+}
+
+fn retry_local_server(app: AppHandle, tab_id: String, pane: &'static str, label: String, state: Arc<Mutex<BrowserState>>) {
+    let (generation, target) = {
+        let state = state.lock().unwrap();
+        if !state.visible { return; }
+        let Some(target) = state.offline_retry_target.clone() else { return };
+        (state.generation, target)
+    };
+    std::thread::spawn(move || {
+        let online = local_server_is_online(&target);
+        let app_main = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            {
+                let state = state.lock().unwrap();
+                if !state.visible || state.generation != generation { return; }
+            }
+            let Some(webview) = app_main.get_webview(&label) else { return };
+            let connecting = if online {
+                let _ = app_main.emit("webview-status", navigation_status(&tab_id, pane, target.as_str(), true));
+                let started = webview.navigate(target.clone()).is_ok();
+                if !started {
+                    let _ = app_main.emit("webview-status", navigation_status(&tab_id, pane, target.as_str(), false));
+                }
+                started
+            } else { false };
+            let _ = webview.eval(&format!(
+                "if (typeof window.onNativeRetryResult === 'function') window.onNativeRetryResult({});", connecting
+            ));
+        });
+    });
+}
 
 fn base64_encode(input: &[u8]) -> String {
     const CHARSET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -270,7 +381,7 @@ fn make_custom_error_url(failed_url: &str, error_code: &str) -> Url {
 
     <div class="status-bar">
       <div class="status-dot"></div>
-      <span id="status-text">Auto-connecting as soon as your server starts...</span>
+      <span id="status-text">Server offline. Checking again in 10 seconds...</span>
     </div>
 
     <div class="suggestions">
@@ -300,42 +411,13 @@ fn make_custom_error_url(failed_url: &str, error_code: &str) -> Url {
   </div>
 
   <script>
-    const targetUrl = "{failed_url}";
-    let isChecking = false;
-
-    async function checkServer() {{
-      if (isChecking) return;
-      isChecking = true;
-      try {{
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 1200);
-        await fetch(targetUrl, {{ mode: 'no-cors', cache: 'no-store', signal: controller.signal }});
-        clearTimeout(timer);
-        window.location.replace(targetUrl);
-      }} catch (e) {{
-        // Server still offline
-      }} finally {{
-        isChecking = false;
-      }}
-    }}
-
-    function retryNow() {{
-      const st = document.getElementById('status-text');
-      if (st) st.innerText = 'Checking port {port}...';
-      checkServer().then(() => {{
-        setTimeout(() => {{
-          if (st) st.innerText = 'Auto-connecting as soon as your server starts...';
-        }}, 1000);
-      }});
-    }}
-
-    setInterval(checkServer, 2500);
+    {retry_script}
   </script>
 </body>
 </html>"##,
             port = port,
             error_code = error_code,
-            failed_url = failed_url,
+            retry_script = include_str!("offline-retry.js"),
         )
     } else {
         format!(r##"<!DOCTYPE html>
@@ -670,9 +752,11 @@ fn app_open_devtools(app: AppHandle) {
     }
 }
 
-#[derive(serde::Serialize, Clone, Debug)]
+#[derive(serde::Serialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct WebviewStatusPayload {
+    pub tab_id: String,
+    pub pane: &'static str,
     pub url: Option<String>,
     pub title: Option<String>,
     pub is_loading: Option<bool>,
@@ -680,227 +764,339 @@ pub struct WebviewStatusPayload {
     pub can_go_forward: Option<bool>,
 }
 
+fn navigation_status(tab_id: &str, pane: &'static str, url: &str, is_loading: bool) -> WebviewStatusPayload {
+    let is_error_page = url.starts_with("data:text/html")
+        || url.starts_with("chrome-error://") || url.starts_with("edge://chromewebdata");
+    WebviewStatusPayload {
+        tab_id: tab_id.to_string(), pane,
+        url: if is_error_page { None } else { Some(url.to_string()) },
+        is_loading: Some(is_loading && !is_error_page), ..Default::default()
+    }
+}
+
+fn destination_url(url: &Url) -> Url {
+    if local_server_addresses(url).is_some() {
+        if !local_server_is_online(url) {
+            return make_custom_error_url(url.as_str(), "ERR_CONNECTION_REFUSED");
+        }
+    } else if matches!(url.scheme(), "http" | "https") {
+        let host = url.host_str().unwrap_or("");
+        if format!("{}:443", host).to_socket_addrs().is_err()
+            && format!("{}:80", host).to_socket_addrs().is_err() {
+            return make_custom_error_url(url.as_str(), "ERR_NAME_NOT_RESOLVED");
+        }
+    }
+    url.clone()
+}
+
+fn begin_navigation(app: &AppHandle, tab_id: &str, pane: &'static str, url: &Url) -> Url {
+    let destination = destination_url(url);
+    {
+        let state = browser_state(tab_id, pane);
+        let mut state = state.lock().unwrap();
+        state.generation += 1;
+        state.last_requested_url = url.to_string();
+        state.offline_retry_target = retry_target(&destination, url.as_str());
+    }
+    let _ = app.emit("webview-status", navigation_status(tab_id, pane, url.as_str(), !destination.as_str().starts_with("data:text/html")));
+    destination
+}
 
 #[tauri::command]
-fn navigate_browser_view(app: AppHandle, url: String) -> Result<(), String> {
-    log_debug(&format!("navigate_browser_view to: {}", url));
-    let parsed_url = Url::parse(&url).map_err(|e| format!("Invalid URL: {}", e))?;
-
-    if let Ok(mut lock) = LAST_REQUESTED_URL.lock() {
-        *lock = url.clone();
-    }
-
-    let _ = app.emit("webview-status", WebviewStatusPayload {
-        url: Some(url.clone()),
-        title: None,
-        is_loading: Some(true),
-        can_go_back: None,
-        can_go_forward: None,
-    });
-
-    if let Some(webview) = app.get_webview("browser-viewport") {
-        let _ = webview.show();
+fn navigate_browser_view(app: AppHandle, url: String, pane: Option<String>, tab_id: Option<String>) -> Result<(), String> {
+    let (pane, _) = pane_details(pane.as_deref())?;
+    let tab_id = tab_id.as_deref().unwrap_or("tab-1");
+    let label = browser_label(tab_id, pane)?;
+    let parsed = Url::parse(&url).map_err(|error| error.to_string())?;
+    let webview = app.get_webview(&label).ok_or("Browser pane is not ready")?;
+    let destination = begin_navigation(&app, tab_id, pane, &parsed);
+    // A late command for a background tab must not bring its webview forward.
+    if browser_state(tab_id, pane).lock().unwrap().visible {
         let _ = webview.set_focus();
-
-        let host = parsed_url.host_str().unwrap_or("").to_string();
-        let is_local = host == "localhost"
-            || host == "127.0.0.1"
-            || host.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false);
-
-        if is_local {
-            let port = parsed_url.port().unwrap_or(if parsed_url.scheme() == "https" { 443 } else { 80 });
-            let addr: Result<SocketAddr, _> = format!("127.0.0.1:{}", port).parse();
-            let is_open = if let Ok(sa) = addr {
-                TcpStream::connect_timeout(&sa, Duration::from_millis(150)).is_ok()
-            } else {
-                false
-            };
-
-            if !is_open {
-                log_debug(&format!(
-                    "Local server at port {} is offline, displaying custom offline page",
-                    port
-                ));
-                let custom_err = make_custom_error_url(&url, "ERR_CONNECTION_REFUSED");
-                webview.navigate(custom_err).map_err(|e| e.to_string())?;
-                return Ok(());
-            }
-            webview.navigate(parsed_url).map_err(|e| e.to_string())?;
-        } else if parsed_url.scheme() == "http" || parsed_url.scheme() == "https" {
-            let addr1 = format!("{}:443", host);
-            let addr2 = format!("{}:80", host);
-            let is_resolvable = addr1.to_socket_addrs().is_ok() || addr2.to_socket_addrs().is_ok();
-
-            if !is_resolvable {
-                log_debug(&format!(
-                    "DNS resolution failed for {}, navigating directly to custom error page",
-                    url
-                ));
-                let custom_err = make_custom_error_url(&url, "ERR_NAME_NOT_RESOLVED");
-                webview.navigate(custom_err).map_err(|e| e.to_string())?;
-                return Ok(());
-            }
-
-            webview.navigate(parsed_url).map_err(|e| e.to_string())?;
-        } else {
-            webview.navigate(parsed_url).map_err(|e| e.to_string())?;
-        }
+    }
+    if let Err(error) = webview.navigate(destination) {
+        let _ = app.emit("webview-status", navigation_status(tab_id, pane, &url, false));
+        return Err(error.to_string());
     }
     Ok(())
 }
+
 #[tauri::command]
-fn reload_browser_view(app: AppHandle) -> Result<(), String> {
-    log_debug("reload_browser_view CALLED");
-    let _ = app.emit("webview-status", WebviewStatusPayload {
-        url: None,
-        title: None,
-        is_loading: Some(true),
-        can_go_back: None,
-        can_go_forward: None,
+fn reload_browser_view(app: AppHandle, pane: Option<String>, tab_id: Option<String>) -> Result<(), String> {
+    let (pane, _) = pane_details(pane.as_deref())?;
+    let tab_id = tab_id.as_deref().unwrap_or("tab-1");
+    let label = browser_label(tab_id, pane)?;
+    let (url, offline) = {
+        let state = browser_state(tab_id, pane);
+        let state = state.lock().unwrap();
+        (state.last_requested_url.clone(), state.offline_retry_target.is_some())
+    };
+    if offline { return navigate_browser_view(app, url, Some(pane.to_string()), Some(tab_id.to_string())); }
+    let webview = app.get_webview(&label).ok_or("Browser pane is not ready")?;
+    let _ = app.emit("webview-status", navigation_status(tab_id, pane, &url, true));
+    webview.reload().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn go_back_browser_view(app: AppHandle, pane: Option<String>, tab_id: Option<String>) -> Result<(), String> {
+    let (pane, _) = pane_details(pane.as_deref())?;
+    let label = browser_label(tab_id.as_deref().unwrap_or("tab-1"), pane)?;
+    let webview = app.get_webview(&label).ok_or("Browser pane is not ready")?;
+    #[cfg(windows)]
+    webview.with_webview(move |platform| unsafe {
+        if let Ok(core) = platform.controller().CoreWebView2() {
+            let mut can_back = windows_core::BOOL(0);
+            if core.CanGoBack(&mut can_back).is_ok() && can_back.as_bool() { let _ = core.GoBack(); }
+        }
+    }).map_err(|error| error.to_string())?;
+    #[cfg(not(windows))]
+    webview.eval("window.history.back()").map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn go_forward_browser_view(app: AppHandle, pane: Option<String>, tab_id: Option<String>) -> Result<(), String> {
+    let (pane, _) = pane_details(pane.as_deref())?;
+    let label = browser_label(tab_id.as_deref().unwrap_or("tab-1"), pane)?;
+    let webview = app.get_webview(&label).ok_or("Browser pane is not ready")?;
+    #[cfg(windows)]
+    webview.with_webview(move |platform| unsafe {
+        if let Ok(core) = platform.controller().CoreWebView2() {
+            let mut can_forward = windows_core::BOOL(0);
+            if core.CanGoForward(&mut can_forward).is_ok() && can_forward.as_bool() { let _ = core.GoForward(); }
+        }
+    }).map_err(|error| error.to_string())?;
+    #[cfg(not(windows))]
+    webview.eval("window.history.forward()").map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn emit_history_status(app: AppHandle, webview: &tauri::Webview, tab_id: &str, pane: &'static str) {
+    let tab_id = tab_id.to_string();
+    #[cfg(windows)]
+    let _ = webview.with_webview(move |platform| unsafe {
+        if let Ok(core) = platform.controller().CoreWebView2() {
+            let mut back = windows_core::BOOL(0);
+            let mut forward = windows_core::BOOL(0);
+            let _ = core.CanGoBack(&mut back);
+            let _ = core.CanGoForward(&mut forward);
+            let _ = app.emit("webview-status", WebviewStatusPayload {
+                tab_id, pane, can_go_back: Some(back.as_bool()), can_go_forward: Some(forward.as_bool()),
+                ..Default::default()
+            });
+        }
     });
+}
 
-    if let Some(webview) = app.get_webview("browser-viewport") {
-        let last_url = LAST_REQUESTED_URL.lock().unwrap().clone();
-        #[cfg(windows)]
-        {
-            let last_url_clone = last_url.clone();
-            let app_clone = app.clone();
-            let _ = webview.with_webview(move |platform_webview| {
-                unsafe {
-                    if let Ok(core) = platform_webview.controller().CoreWebView2() {
-                        let mut uri_p = windows_core::PWSTR::null();
-                        let mut is_data_err = false;
-                        if core.Source(&mut uri_p).is_ok() && !uri_p.is_null() {
-                            let s = uri_p.to_string().unwrap_or_default();
-                            if s.starts_with("data:text/html") {
-                                is_data_err = true;
-                            }
-                        }
-                        if is_data_err && !last_url_clone.is_empty() {
-                            log_debug(&format!("Reloading from error page, retrying: {}", last_url_clone));
-                            let _ = navigate_browser_view(app_clone, last_url_clone);
-                        } else {
-                            let _ = core.Reload();
-                        }
-                    }
-                }
-            });
-            return Ok(());
-        }
-        #[cfg(not(windows))]
-        let _ = webview.eval("window.location.reload()");
+#[derive(serde::Deserialize, Clone, Copy, Debug)]
+struct BrowserBounds { x: f64, y: f64, width: f64, height: f64 }
+
+impl BrowserBounds {
+    fn validate(&self) -> Result<(), String> {
+        if [self.x, self.y, self.width, self.height].iter().all(|value| value.is_finite())
+            && self.x >= 0.0 && self.y >= 0.0 && self.width > 0.0 && self.height > 0.0 { Ok(()) }
+        else { Err("Invalid browser pane bounds".to_string()) }
     }
-    Ok(())
+    fn apply(&self, webview: &tauri::Webview) -> Result<(), String> {
+        self.validate()?;
+        webview.set_position(LogicalPosition::new(self.x, self.y)).map_err(|error| error.to_string())?;
+        webview.set_size(LogicalSize::new(self.width, self.height)).map_err(|error| error.to_string())
+    }
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct BrowserViewRef { tab_id: String, pane: String }
+
+impl BrowserViewRef {
+    fn key(&self) -> Result<(String, &'static str), String> {
+        let (pane, _) = pane_details(Some(&self.pane))?;
+        browser_label(&self.tab_id, pane)?;
+        Ok((self.tab_id.clone(), pane))
+    }
+}
+
+// Layout slots and page identities are separate: detaching a split keeps the
+// same WebView2 instance, event callbacks, loaded document, and history.
+fn browser_layout(tab_id: &str, primary: BrowserBounds, secondary: Option<BrowserBounds>,
+    reversed: bool, primary_view: Option<BrowserViewRef>, secondary_view: Option<BrowserViewRef>)
+    -> Result<Vec<(BrowserViewRef, BrowserBounds, &'static str)>, String> {
+    primary.validate()?;
+    if let Some(bounds) = secondary { bounds.validate()?; }
+    let (primary, secondary) = ordered_pane_bounds(primary, secondary, reversed);
+    let primary_view = primary_view.unwrap_or(BrowserViewRef { tab_id: tab_id.to_string(), pane: "primary".to_string() });
+    let secondary_view = secondary_view.unwrap_or(BrowserViewRef { tab_id: tab_id.to_string(), pane: "secondary".to_string() });
+    let mut views = Vec::new();
+    let mut keys = HashSet::new();
+    for (view, bounds, slot) in [(primary_view, primary, "primary"), (secondary_view, secondary, "secondary")] {
+        if let Some(bounds) = bounds {
+            if !keys.insert(view.key()?) { return Err("A browser page cannot occupy both split panes".to_string()); }
+            views.push((view, bounds, slot));
+        }
+    }
+    Ok(views)
 }
 
 #[tauri::command]
-fn go_back_browser_view(app: AppHandle) -> Result<(), String> {
-    log_debug("go_back_browser_view CALLED");
-    if let Some(webview) = app.get_webview("browser-viewport") {
-        #[cfg(windows)]
-        {
-            let _ = webview.with_webview(move |platform_webview| {
-                unsafe {
-                    if let Ok(core) = platform_webview.controller().CoreWebView2() {
-                        let mut can_back = windows_core::BOOL(0);
-                        if core.CanGoBack(&mut can_back).is_ok() && can_back.as_bool() {
-                            let _ = core.GoBack();
-                        }
-                    }
-                }
-            });
-            return Ok(());
+async fn configure_browser_views(app: AppHandle, primary: BrowserBounds, secondary: Option<BrowserBounds>,
+    right_url: String, primary_url: String, tab_id: String, reversed: Option<bool>,
+    primary_view: Option<BrowserViewRef>, secondary_view: Option<BrowserViewRef>) -> Result<(), String> {
+    let _layout = LAYOUT_LOCK.lock().unwrap();
+    let layout = browser_layout(&tab_id, primary, secondary, reversed.unwrap_or(false), primary_view, secondary_view)?;
+    let keys = layout.iter().map(|(view, _, _)| view.key()).collect::<Result<HashSet<_>, _>>()?;
+    let labels = keys.iter().map(|(owner, pane)| browser_label(owner, pane)).collect::<Result<HashSet<_>, _>>()?;
+    let states = {
+        let registry = registry().lock().unwrap();
+        if keys.iter().any(|key| registry.closed_views.contains(key)) { return Ok(()); }
+        registry.states.iter().map(|(key, value)| (key.clone(), value.clone())).collect::<Vec<_>>()
+    };
+    for ((owner, pane), state) in states {
+        let mut state = state.lock().unwrap();
+        let visible = keys.contains(&(owner, pane));
+        if state.visible && !visible { state.generation += 1; }
+        state.visible = visible;
+    }
+    for (label, webview) in app.webviews() {
+        if (label.starts_with("browser-viewport-") || label.starts_with("browser-split-"))
+            && !labels.contains(&label) {
+            let _ = webview.hide();
         }
-        #[cfg(not(windows))]
-        let _ = webview.eval("window.history.back()");
+    }
+    for (view, bounds, slot) in layout {
+        let (owner, pane) = view.key()?;
+        let url = if slot == "primary" { &primary_url } else { &right_url };
+        let label = browser_label(&owner, pane)?;
+        browser_state(&owner, pane).lock().unwrap().visible = true;
+        if let Some(webview) = app.get_webview(&label) {
+            bounds.apply(&webview)?;
+            webview.show().map_err(|error| error.to_string())?;
+        } else {
+            let requested = Url::parse(url).map_err(|error| error.to_string())?;
+            let initial_url = begin_navigation(&app, &owner, pane, &requested);
+            let focused = slot == if reversed.unwrap_or(false) { "secondary" } else { "primary" };
+            create_browser_view(&app, &owner, pane, bounds, initial_url, focused)?;
+        }
     }
     Ok(())
+}
+
+fn ordered_pane_bounds(left: BrowserBounds, right: Option<BrowserBounds>, reversed: bool)
+    -> (Option<BrowserBounds>, Option<BrowserBounds>) {
+    if reversed { (right, Some(left)) } else { (Some(left), right) }
+}
+
+// Resizing an existing layout only moves its views, preserving page state and focus.
+#[tauri::command]
+async fn resize_browser_views(app: AppHandle, primary: BrowserBounds, secondary: Option<BrowserBounds>,
+    tab_id: String, reversed: Option<bool>, primary_view: Option<BrowserViewRef>,
+    secondary_view: Option<BrowserViewRef>) -> Result<(), String> {
+    let _layout = LAYOUT_LOCK.lock().unwrap();
+    let layout = browser_layout(&tab_id, primary, secondary, reversed.unwrap_or(false), primary_view, secondary_view)?;
+    for (view, bounds, _) in layout {
+        let (owner, pane) = view.key()?;
+        if registry().lock().unwrap().closed_views.contains(&(owner.clone(), pane)) { return Ok(()); }
+        let webview = app.get_webview(&browser_label(&owner, pane)?)
+            .ok_or_else(|| "Browser pane is not ready".to_string())?;
+        bounds.apply(&webview)?;
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct SplitDragPointer { x: f64, pressed: bool }
+
+fn client_pointer_x(cursor_x: f64, window_x: i32, scale: f64) -> f64 {
+    (cursor_x - f64::from(window_x)) / scale
+}
+
+// Child WebView2 windows can take mouse capture away from the UI webview.
+// Read the pointer only while a divider drag is active so it survives crossing a page.
+#[tauri::command]
+fn get_split_drag_pointer(window: tauri::Window) -> Result<SplitDragPointer, String> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+        let cursor = window.cursor_position().map_err(|error| error.to_string())?;
+        let origin = window.inner_position().map_err(|error| error.to_string())?;
+        let scale = window.scale_factor().map_err(|error| error.to_string())?;
+        let pressed = unsafe { GetAsyncKeyState(0x01) < 0 && GetAsyncKeyState(0x1B) >= 0 };
+        Ok(SplitDragPointer { x: client_pointer_x(cursor.x, origin.x, scale), pressed })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        Err("Native split drag tracking is only available on Windows".to_string())
+    }
 }
 
 #[tauri::command]
-fn go_forward_browser_view(app: AppHandle) -> Result<(), String> {
-    log_debug("go_forward_browser_view CALLED");
-    if let Some(webview) = app.get_webview("browser-viewport") {
-        #[cfg(windows)]
-        {
-            let _ = webview.with_webview(move |platform_webview| {
-                unsafe {
-                    if let Ok(core) = platform_webview.controller().CoreWebView2() {
-                        let mut can_fwd = windows_core::BOOL(0);
-                        if core.CanGoForward(&mut can_fwd).is_ok() && can_fwd.as_bool() {
-                            let _ = core.GoForward();
-                        }
-                    }
-                }
-            });
-            return Ok(());
+async fn close_browser_views(app: AppHandle, views: Vec<BrowserViewRef>) -> Result<(), String> {
+    let _layout = LAYOUT_LOCK.lock().unwrap();
+    let keys = views.iter().map(BrowserViewRef::key).collect::<Result<Vec<_>, _>>()?;
+    {
+        let mut registry = registry().lock().unwrap();
+        retire_browser_views(&mut registry, &keys);
+    }
+    for (owner, pane) in keys {
+        if let Some(webview) = app.get_webview(&browser_label(&owner, pane)?) {
+            webview.close().map_err(|error| error.to_string())?;
         }
-        #[cfg(not(windows))]
-        let _ = webview.eval("window.history.forward()");
     }
     Ok(())
 }
 
-#[tauri::command]
-fn update_browser_bounds(
-    app: AppHandle,
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-) -> Result<(), String> {
-    log_debug(&format!("update_browser_bounds: x={}, y={}, w={}, h={}", x, y, width, height));
-    if let Some(webview) = app.get_webview("browser-viewport") {
-        let _ = webview.set_position(LogicalPosition::new(x, y));
-        let _ = webview.set_size(LogicalSize::new(width, height));
+fn retire_browser_views(registry: &mut BrowserRegistry, keys: &[(String, &'static str)]) {
+    for key in keys {
+        registry.closed_views.insert(key.clone());
+        if let Some(state) = registry.states.remove(key) {
+            let mut state = state.lock().unwrap();
+            state.visible = false;
+            state.generation += 1;
+        }
     }
-    Ok(())
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
-        .setup(|app| {
-            log_debug("=== SETUP START ===");
-            for (label, _) in app.windows() {
-                log_debug(&format!("Found window: {}", label));
+fn initial_browser_url(url: &Url) -> Url {
+    // Tauri rejects data URLs at creation without an extra feature, but permits
+    // navigating an existing webview to our generated offline document.
+    if url.scheme() == "data" { Url::parse("about:blank").unwrap() } else { url.clone() }
+}
+
+fn create_browser_view(app: &AppHandle, tab_id: &str, pane: &'static str, bounds: BrowserBounds,
+    initial_url: Url, focused: bool) -> Result<tauri::Webview, String> {
+    let label = browser_label(tab_id, pane)?;
+    let retry_label = label.clone();
+    let nav_tab = tab_id.to_string();
+    let load_tab = tab_id.to_string();
+    let title_tab = tab_id.to_string();
+    let nav_state = browser_state(tab_id, pane);
+    let load_state = nav_state.clone();
+    let title_state = nav_state.clone();
+    let app_nav = app.clone();
+    let app_load = app.clone();
+    let app_title = app.clone();
+    let builder = WebviewBuilder::new(label, WebviewUrl::External(initial_browser_url(&initial_url)))
+        .focused(focused)
+        .on_navigation(move |url| {
+            if url.as_str() == "about:blank" { return true; }
+            if url.as_str() == "https://auraview.invalid/retry-local-server" {
+                retry_local_server(app_nav.clone(), nav_tab.clone(), pane, retry_label.clone(), nav_state.clone());
+                return false;
             }
-            for (label, _) in app.webviews() {
-                log_debug(&format!("Found webview: {}", label));
+            {
+                let mut state = nav_state.lock().unwrap();
+                state.generation += 1;
+                state.offline_retry_target = retry_target(url, &state.last_requested_url);
+                if !url.as_str().starts_with("data:text/html")
+                    && !url.as_str().starts_with("chrome-error://")
+                    && !url.as_str().starts_with("edge://chromewebdata") {
+                    state.last_requested_url = url.to_string();
+                }
             }
-
-            let app_handle = app.handle().clone();
-
-            if let Some(window) = app.get_window("main") {
-                log_debug("Adding child webview browser-viewport to main window");
-                let initial_url = Url::parse("https://www.google.com").unwrap();
-                let app_nav = app_handle.clone();
-                let app_load = app_handle.clone();
-                let app_title = app_handle.clone();
-
-                let builder = WebviewBuilder::new(
-                    "browser-viewport",
-                    WebviewUrl::External(initial_url),
-                )
-                .on_navigation(move |url| {
-                    log_debug(&format!("[ON NAVIGATION] target: {}", url));
-                    let url_str = url.as_str().to_string();
-                    if !url_str.starts_with("data:text/html") {
-                        if let Ok(mut lock) = LAST_REQUESTED_URL.lock() {
-                            *lock = url_str;
-                        }
-                    }
-                    let _ = app_nav.emit("webview-status", WebviewStatusPayload {
-                        url: None,
-                        title: None,
-                        is_loading: Some(true),
-                        can_go_back: None,
-                        can_go_forward: None,
-                    });
-                    true
-                })
-                .background_color(tauri::webview::Color(9, 12, 16, 255))
+            let _ = app_nav.emit("webview-status", navigation_status(&nav_tab, pane, url.as_str(), true));
+            true
+        })
+        .background_color(tauri::webview::Color(9, 12, 16, 255))
                 .initialization_script(r#"
                     const setDark = () => {
                         if (document.documentElement) {
@@ -930,107 +1126,243 @@ pub fn run() {
                     window.addEventListener('DOMContentLoaded', hideEdgeError);
                     setInterval(hideEdgeError, 250);
                 "#)
-                .on_page_load(move |webview, payload| {
-                    log_debug(&format!("[PAGE LOAD] url: {}, event: {:?}", payload.url(), payload.event()));
-                    let url_str = payload.url().as_str().to_string();
 
-                    match payload.event() {
-                        tauri::webview::PageLoadEvent::Started => {
-                            let _ = app_load.emit("webview-status", WebviewStatusPayload {
-                                url: if !url_str.starts_with("data:text/html") { Some(url_str.clone()) } else { None },
-                                title: None,
-                                is_loading: Some(true),
-                                can_go_back: None,
-                                can_go_forward: None,
-                            });
-                        }
-                        tauri::webview::PageLoadEvent::Finished => {
-                            let _ = app_load.emit("webview-status", WebviewStatusPayload {
-                                url: if !url_str.starts_with("data:text/html") { Some(url_str.clone()) } else { None },
-                                title: None,
-                                is_loading: Some(false),
-                                can_go_back: None,
-                                can_go_forward: None,
-                            });
-
-                            if url_str.starts_with("chrome-error://") || url_str.starts_with("edge://chromewebdata") {
-                                let failed_url = LAST_REQUESTED_URL.lock().unwrap().clone();
-                                let display_url = if failed_url.is_empty() { "Unknown site".to_string() } else { failed_url };
-                                let err_url = make_custom_error_url(&display_url, "ERR_NAME_NOT_RESOLVED");
-                                let _ = webview.navigate(err_url);
-                            }
-                        }
-                    }
-                })
-                .on_document_title_changed(move |webview, title| {
-                    log_debug(&format!("[TITLE CHANGED] title: {}", title));
-                    let t_lower = title.to_lowercase();
-                    let is_edge_err_title = t_lower == "can't reach this page"
-                        || t_lower == "cannot reach this page"
-                        || t_lower.starts_with("hmmm… can't reach this page")
-                        || t_lower.starts_with("hmmm... can't reach this page")
-                        || t_lower == "hmmm… can’t reach this page"
-                        || t_lower.contains("err_name_not_resolved")
-                        || t_lower.contains("err_connection_refused")
-                        || t_lower.contains("err_internet_disconnected");
-
-                    if !t_lower.contains("auraview") && is_edge_err_title {
-                        let failed_url = LAST_REQUESTED_URL.lock().unwrap().clone();
-                        let display_url = if failed_url.is_empty() { "Unknown site".to_string() } else { failed_url };
-                        let err_url = make_custom_error_url(&display_url, "ERR_CONNECTION_FAILED");
-                        let _ = webview.navigate(err_url);
-                    } else if !title.is_empty() && !title.contains("AuraView") {
-                        let _ = app_title.emit("webview-status", WebviewStatusPayload {
-                            url: None,
-                            title: Some(title.clone()),
-                            is_loading: None,
-                            can_go_back: None,
-                            can_go_forward: None,
-                        });
-                    }
-                });
-
-                if let Ok(child_webview) = window.add_child(
-                    builder,
-                    LogicalPosition::new(0., 80.),
-                    LogicalSize::new(1280., 760.),
-                ) {
-                    let _ = child_webview.with_webview(|platform_webview| {
-                        #[cfg(windows)]
-                        unsafe {
-                            use webview2_com_sys::Microsoft::Web::WebView2::Win32::*;
-                            use windows_core::Interface;
-                            if let Ok(controller2) = platform_webview.controller().cast::<ICoreWebView2Controller2>() {
-                                let color = COREWEBVIEW2_COLOR { A: 255, R: 9, G: 12, B: 16 };
-                                let _ = controller2.SetDefaultBackgroundColor(color);
-                            }
-                            if let Ok(core) = platform_webview.controller().CoreWebView2() {
-                                if let Ok(settings) = core.Settings() {
-                                    let _ = settings.SetIsBuiltInErrorPageEnabled(false);
-                                }
-                            }
-                        }
-                    });
+        .on_page_load(move |webview, payload| {
+            let url = payload.url().as_str();
+            if url == "about:blank" { return; }
+            let loading = matches!(payload.event(), tauri::webview::PageLoadEvent::Started);
+            let _ = app_load.emit("webview-status", navigation_status(&load_tab, pane, url, loading));
+            if !loading {
+                emit_history_status(app_load.clone(), &webview, &load_tab, pane);
+                if url.starts_with("chrome-error://") || url.starts_with("edge://chromewebdata") {
+                    let failed = load_state.lock().unwrap().last_requested_url.clone();
+                    let _ = webview.navigate(make_custom_error_url(&failed, "ERR_CONNECTION_FAILED"));
                 }
             }
+        })
+        .on_document_title_changed(move |webview, title| {
+            if title == "about:blank" { return; }
+            let lower = title.to_lowercase();
+            let is_error = lower == "can't reach this page" || lower == "cannot reach this page"
+                || lower.starts_with("hmmm… can't reach this page") || lower.starts_with("hmmm... can't reach this page")
+                || lower == "hmmm… can’t reach this page" || lower.contains("err_name_not_resolved")
+                || lower.contains("err_connection_refused") || lower.contains("err_internet_disconnected");
+            if !lower.contains("auraview") && is_error {
+                let failed = title_state.lock().unwrap().last_requested_url.clone();
+                let _ = webview.navigate(make_custom_error_url(&failed, "ERR_CONNECTION_FAILED"));
+            } else if !title.is_empty() && !title.contains("AuraView") {
+                let _ = app_title.emit("webview-status", WebviewStatusPayload {
+                    tab_id: title_tab.clone(), pane, title: Some(title), ..Default::default()
+                });
+            }
+        });
+    let window = app.get_window("main").ok_or("Main window is not ready")?;
+    let child = window.add_child(builder, LogicalPosition::new(bounds.x, bounds.y),
+        LogicalSize::new(bounds.width, bounds.height)).map_err(|error| error.to_string())?;
+    let _ = child.with_webview(|platform| {
+        #[cfg(windows)]
+        unsafe {
+            use webview2_com_sys::Microsoft::Web::WebView2::Win32::*;
+            use windows_core::Interface;
+            if let Ok(controller) = platform.controller().cast::<ICoreWebView2Controller2>() {
+                let _ = controller.SetDefaultBackgroundColor(COREWEBVIEW2_COLOR { A: 255, R: 9, G: 12, B: 16 });
+            }
+            if let Ok(core) = platform.controller().CoreWebView2() {
+                if let Ok(settings) = core.Settings() { let _ = settings.SetIsBuiltInErrorPageEnabled(false); }
+            }
+        }
+    });
+    if initial_url.scheme() == "data" {
+        child.navigate(initial_url).map_err(|error| error.to_string())?;
+    }
+    Ok(child)
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
+        .setup(|app| {
+            create_browser_view(app.handle(), "tab-1", "primary",
+                BrowserBounds { x: 0.0, y: 80.0, width: 1280.0, height: 760.0 },
+                Url::parse("https://www.google.com").unwrap(), true)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            check_port_active,
-            log_client_event,
-            app_minimize,
-            app_toggle_maximize,
-            app_is_maximized,
-            app_close,
-            app_start_dragging,
-            app_open_devtools,
-            navigate_browser_view,
-            reload_browser_view,
-            go_back_browser_view,
-            go_forward_browser_view,
-            update_browser_bounds
+            check_port_active, log_client_event, app_minimize, app_toggle_maximize,
+            app_is_maximized, app_close, app_start_dragging, app_open_devtools,
+            navigate_browser_view, reload_browser_view, go_back_browser_view,
+            go_forward_browser_view, configure_browser_views, resize_browser_views,
+            get_split_drag_pointer, close_browser_views
         ])
         .run(tauri::generate_context!())
         .expect("error while running AuraView application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detached_pages_keep_native_identities_when_shown_alone_or_in_a_new_split() {
+        let left = BrowserBounds { x: 0.0, y: 120.0, width: 400.0, height: 600.0 };
+        let right = BrowserBounds { x: 408.0, width: 600.0, ..left };
+        let detached = || BrowserViewRef { tab_id: "original".to_string(), pane: "secondary".to_string() };
+        let single = browser_layout("detached", left, None, false, Some(detached()), None).unwrap();
+        assert_eq!(single.len(), 1);
+        assert_eq!(single[0].0.key().unwrap(), ("original".to_string(), "secondary"));
+        assert_eq!(single[0].1.x, 0.0);
+        assert_eq!(single[0].2, "primary");
+        let new_page = || BrowserViewRef { tab_id: "fresh".to_string(), pane: "primary".to_string() };
+        let split = browser_layout("detached", left, Some(right), true, Some(detached()), Some(new_page())).unwrap();
+        assert_eq!(split[0].0.key().unwrap(), single[0].0.key().unwrap());
+        assert_eq!(split[0].1.x, 408.0);
+        assert_eq!(split[1].0.key().unwrap(), ("fresh".to_string(), "primary"));
+        assert_eq!(split[1].1.x, 0.0);
+        assert!(browser_layout("detached", left, Some(right), false, Some(detached()), Some(detached())).is_err());
+    }
+
+    #[test]
+    fn closing_one_detached_page_keeps_its_former_partner_alive() {
+        let mut registry = BrowserRegistry::default();
+        let first_key = ("pair".to_string(), "primary");
+        let second_key = ("pair".to_string(), "secondary");
+        let first = Arc::new(Mutex::new(BrowserState::new(true)));
+        let second = Arc::new(Mutex::new(BrowserState::new(true)));
+        registry.states.insert(first_key.clone(), first.clone());
+        registry.states.insert(second_key.clone(), second.clone());
+        retire_browser_views(&mut registry, &[first_key.clone()]);
+        assert!(registry.closed_views.contains(&first_key));
+        assert!(!registry.closed_views.contains(&second_key));
+        assert!(!registry.states.contains_key(&first_key));
+        assert!(Arc::ptr_eq(registry.states.get(&second_key).unwrap(), &second));
+        assert!(!first.lock().unwrap().visible);
+        assert_eq!(first.lock().unwrap().generation, 1);
+        assert!(second.lock().unwrap().visible);
+    }
+
+    #[test]
+    fn drag_coordinates_use_client_origin_and_display_scale() {
+        assert_eq!(client_pointer_x(1300.0, 100, 1.5), 800.0);
+        assert_eq!(client_pointer_x(-400.0, -1600, 2.0), 600.0);
+    }
+
+    #[test]
+    fn swapping_moves_existing_panes_and_keeps_the_first_visible_when_split_closes() {
+        let left = BrowserBounds { x: 0.0, y: 120.0, width: 640.0, height: 600.0 };
+        let right = BrowserBounds { x: 640.0, ..left };
+        let (primary, secondary) = ordered_pane_bounds(left, Some(right), true);
+        assert_eq!(primary.unwrap().x, 640.0);
+        assert_eq!(secondary.unwrap().x, 0.0);
+        let (primary, secondary) = ordered_pane_bounds(left, Some(right), false);
+        assert_eq!(primary.unwrap().x, 0.0);
+        assert_eq!(secondary.unwrap().x, 640.0);
+        let (primary, secondary) = ordered_pane_bounds(left, None, true);
+        assert!(primary.is_none());
+        assert_eq!(secondary.unwrap().x, 0.0);
+    }
+
+    #[test]
+    fn offline_right_panes_start_with_a_supported_url_before_showing_the_error_page() {
+        let offline = make_custom_error_url("http://localhost:7860", "ERR_CONNECTION_REFUSED");
+        assert_eq!(initial_browser_url(&offline).as_str(), "about:blank");
+        let online = Url::parse("http://localhost:8188/").unwrap();
+        assert_eq!(initial_browser_url(&online), online);
+    }
+
+    #[test]
+    fn pane_routing_uses_distinct_webviews_and_status_sources() {
+        assert_eq!(pane_details(None).unwrap(), ("primary", "browser-viewport"));
+        assert_eq!(pane_details(Some("secondary")).unwrap(), ("secondary", "browser-split"));
+        assert!(pane_details(Some("main")).is_err());
+        let left = navigation_status("tab-1", "primary", "http://localhost:8188", true);
+        let right = navigation_status("tab-1", "secondary", "http://localhost:7860", false);
+        assert_eq!(left.pane, "primary");
+        assert_eq!(right.pane, "secondary");
+        assert_eq!(left.is_loading, Some(true));
+        assert_eq!(right.is_loading, Some(false));
+        assert_eq!(serde_json::to_value(right).unwrap()["pane"], "secondary");
+        assert!(!Arc::ptr_eq(&browser_state("tab-1", "primary"), &browser_state("tab-1", "secondary")));
+    }
+
+    #[test]
+    fn different_tabs_keep_separate_native_views_and_state() {
+        assert_ne!(browser_label("first", "primary").unwrap(), browser_label("second", "primary").unwrap());
+        assert_ne!(browser_label("first", "primary").unwrap(), browser_label("first", "secondary").unwrap());
+        let first = browser_state("ownership-first", "secondary");
+        let second = browser_state("ownership-second", "secondary");
+        first.lock().unwrap().last_requested_url = "http://localhost:8188".to_string();
+        second.lock().unwrap().last_requested_url = "http://localhost:7860".to_string();
+        assert_eq!(first.lock().unwrap().last_requested_url, "http://localhost:8188");
+        assert_eq!(second.lock().unwrap().last_requested_url, "http://localhost:7860");
+        let status = navigation_status("second", "secondary", "https://www.youtube.com", false);
+        assert_eq!(serde_json::to_value(status).unwrap()["tabId"], "second");
+        for invalid in ["", "../main", "tab:main", "tab/1"] {
+            assert!(browser_label(invalid, "primary").is_err());
+        }
+    }
+
+    #[test]
+    fn pane_bounds_require_positive_finite_dimensions() {
+        let valid = BrowserBounds { x: 640.0, y: 120.0, width: 640.0, height: 600.0 };
+        assert!(valid.validate().is_ok());
+        assert!(BrowserBounds { width: 0.0, ..valid }.validate().is_err());
+        assert!(BrowserBounds { height: -1.0, ..valid }.validate().is_err());
+        assert!(BrowserBounds { x: f64::NAN, ..valid }.validate().is_err());
+        assert!(BrowserBounds { height: f64::INFINITY, ..valid }.validate().is_err());
+    }
+
+    #[test]
+    fn offline_page_stops_loading_even_without_a_finished_event() {
+        let offline_url = make_custom_error_url("http://localhost:8188", "ERR_CONNECTION_REFUSED");
+        let status = navigation_status("tab-1", "primary", offline_url.as_str(), true);
+        assert_eq!(status.is_loading, Some(false));
+        // Preserve the requested localhost address in the URL bar.
+        assert_eq!(status.url, None);
+    }
+
+    #[test]
+    fn website_navigation_still_reports_start_and_finish() {
+        let url = "http://localhost:8188";
+        let started = navigation_status("tab-1", "primary", url, true);
+        let finished = navigation_status("tab-1", "primary", url, false);
+        assert_eq!(started.is_loading, Some(true));
+        assert_eq!(started.url.as_deref(), Some(url));
+        assert_eq!(finished.is_loading, Some(false));
+        assert_eq!(finished.url.as_deref(), Some(url));
+    }
+
+    #[test]
+    fn retries_preserve_the_requested_localhost_url() {
+        let requested = "http://localhost:8188/workflow?name=test";
+        let offline = make_custom_error_url(requested, "ERR_CONNECTION_REFUSED");
+        assert_eq!(retry_target(&offline, requested).unwrap().as_str(), requested);
+        assert!(retry_target(&Url::parse(requested).unwrap(), requested).is_none());
+        assert!(retry_target(&offline, "https://example.com").is_none());
+        assert!(retry_target(&offline, "http://192.168.1.1:8188").is_none());
+    }
+
+    #[test]
+    fn probes_support_localhost_ipv4_and_ipv6_only() {
+        let localhost = local_server_addresses(&Url::parse("http://localhost:8188").unwrap()).unwrap();
+        assert_eq!(localhost.len(), 2);
+        assert!(localhost.iter().all(|address| address.ip().is_loopback() && address.port() == 8188));
+        for url in ["http://127.0.0.1:8188", "http://[::1]:8188"] {
+            assert_eq!(local_server_addresses(&Url::parse(url).unwrap()).unwrap().len(), 1);
+        }
+        for url in ["https://example.com", "http://192.168.1.1", "ftp://localhost"] {
+            assert!(local_server_addresses(&Url::parse(url).unwrap()).is_none());
+        }
+    }
+
+    #[test]
+    fn native_probe_detects_a_local_server_starting_and_stopping() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = Url::parse(&format!("http://localhost:{}", port)).unwrap();
+        assert!(local_server_is_online(&url));
+        drop(listener);
+        assert!(!local_server_is_online(&url));
+    }
 }
 

@@ -68,7 +68,7 @@ export const LocalhostDock: React.FC<LocalhostDockProps> = ({ onOpenServer }) =>
             placeholder="Port..."
             min="1"
             max="65535"
-            className="w-20 pl-4 pr-2 py-1 rounded bg-[#131b26] border border-[#233346] text-gray-200 text-xs focus:outline-none focus:border-purple-500 font-mono placeholder-gray-600"
+            className="w-20 pl-4 pr-2 py-1 rounded bg-[#131b26] border border-[#233346] text-gray-200 text-xs focus:outline-none focus:border-purple-500 font-mono placeholder-gray-600 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
           />
         </div>
         <button

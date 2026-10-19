@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Tab } from './types/browser';
+import { BrowserPane } from './types/browser';
+import { BrowserStatus } from './lib/browserStatus';
+import { addTab, applyTabStatus, BrowserSession, closeTab, createTab, moveTab, orderedTabPages, resizeTabSplit, selectTab, swapTabPages, tabPageView, tabViews, toggleSessionSplit } from './lib/tabState';
 import { TabBar } from './components/TabBar';
 import { NavigationBar } from './components/NavigationBar';
 import { LocalhostDock } from './components/LocalhostDock';
@@ -7,283 +9,137 @@ import { WebviewContainer } from './components/WebviewContainer';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
-const INITIAL_TABS: Tab[] = [
-  {
-    id: 'tab-1',
-    title: 'Google',
-    url: 'https://www.google.com',
-    inputUrl: 'https://www.google.com',
-    isLoading: false,
-    canGoBack: false,
-    canGoForward: false,
-  },
-];
+const INITIAL_TAB = { ...createTab('tab-1'), isLoading: false };
 
 export function App() {
-  const [tabs, setTabs] = useState<Tab[]>(INITIAL_TABS);
-  const [activeTabId, setActiveTabId] = useState<string>('tab-1');
-  const [splitTabId, setSplitTabId] = useState<string>('');
-  const [isSplitActive, setIsSplitActive] = useState<boolean>(false);
-  const [vramSaverActive, setVramSaverActive] = useState<boolean>(true);
-  const [showAiDock, setShowAiDock] = useState<boolean>(false);
-  const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  const [session, setSession] = useState<BrowserSession>({ tabs: [INITIAL_TAB], activeTabId: INITIAL_TAB.id });
+  const [showAiDock, setShowAiDock] = useState(false);
+  const { tabs, activeTabId } = session;
+  const activeTab = tabs.find((tab) => tab.id === activeTabId) || tabs[0];
+  const { pane: firstPane, page: firstPage } = orderedTabPages(activeTab)[0];
+  const isSplitActive = Boolean(activeTab.splitEnabled && activeTab.split);
+  const isTauri = '__TAURI_INTERNALS__' in window;
 
-  const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
-  const splitTab = tabs.find((t) => t.id === splitTabId);
-
-  // Tab select handler
-  const handleSelectTab = useCallback(
-    (id: string) => {
-      if (id === activeTabId) return;
-      setActiveTabId(id);
-      const targetTab = tabs.find((t) => t.id === id);
-      if (targetTab && isTauri) {
-        invoke('navigate_browser_view', { url: targetTab.url }).catch(console.error);
-      }
-    },
-    [activeTabId, tabs, isTauri]
-  );
-
-  // New Tab handler
-  const handleNewTab = useCallback(
-    (defaultUrl = 'https://www.google.com') => {
-      const newId = `tab-${Date.now()}`;
-      const isAi = defaultUrl.includes('localhost') || defaultUrl.includes('127.0.0.1');
-      const newTab: Tab = {
-        id: newId,
-        title: isAi ? 'AI Server' : defaultUrl === 'https://www.google.com' ? 'Google' : 'New Tab',
-        url: defaultUrl,
-        inputUrl: defaultUrl,
-        isLoading: true,
-        canGoBack: false,
-        canGoForward: false,
-        isAiServer: isAi,
-      };
-      setTabs((prev) => [...prev, newTab]);
-      setActiveTabId(newId);
-      if (isTauri) {
-        invoke('navigate_browser_view', { url: defaultUrl }).catch(console.error);
-      }
-    },
-    [isTauri]
-  );
-
-  // Close Tab handler
-  const handleCloseTab = useCallback(
-    (id: string, e?: React.MouseEvent) => {
-      if (e) e.stopPropagation();
-      setTabs((prev) => {
-        if (prev.length <= 1) return prev; // Keep at least one tab
-        const nextTabs = prev.filter((t) => t.id !== id);
-        if (id === activeTabId) {
-          const nextActive = nextTabs[nextTabs.length - 1];
-          setActiveTabId(nextActive.id);
-          if (isTauri) {
-            invoke('navigate_browser_view', { url: nextActive.url }).catch(console.error);
-          }
-        }
-        return nextTabs;
-      });
-    },
-    [activeTabId, isTauri]
-  );
-
-  // Navigate Tab URL
-  const handleNavigate = useCallback(
-    (newUrl: string) => {
-      setTabs((prev) =>
-        prev.map((t) => {
-          if (t.id === activeTabId) {
-            const isAi = newUrl.includes('localhost') || newUrl.includes('127.0.0.1');
-            return {
-              ...t,
-              url: newUrl,
-              inputUrl: newUrl,
-              title: isAi
-                ? `Server (${newUrl.replace(/https?:\/\//, '')})`
-                : newUrl.includes('google.com')
-                ? 'Google'
-                : newUrl,
-              isLoading: true,
-            };
-          }
-          return t;
-        })
-      );
-      if (isTauri) {
-        invoke('navigate_browser_view', { url: newUrl }).catch(console.error);
-      }
-    },
-    [activeTabId, isTauri]
-  );
-
-  // Reload handler
-  const handleReload = useCallback(async () => {
-    setTabs((prev) =>
-      prev.map((t) => (t.id === activeTabId ? { ...t, isLoading: true } : t))
-    );
-    try {
-      await invoke('reload_browser_view');
-    } catch (err) {
-      console.error('Reload error, fallback to navigate:', err);
-      handleNavigate(activeTab.url);
-    }
-  }, [activeTabId, activeTab.url, handleNavigate]);
-
-  // Back handler
-  const handleGoBack = useCallback(async () => {
-    try {
-      await invoke('go_back_browser_view');
-    } catch (err) {
-      console.error('Go back error:', err);
-    }
+  const updateStatus = useCallback((status: BrowserStatus) => {
+    setSession((previous) => ({ ...previous, tabs: applyTabStatus(previous.tabs, status) }));
   }, []);
 
-  // Forward handler
-  const handleGoForward = useCallback(async () => {
-    try {
-      await invoke('go_forward_browser_view');
-    } catch (err) {
-      console.error('Go forward error:', err);
-    }
+  const handleSelectTab = useCallback((id: string) => {
+    setSession((previous) => selectTab(previous, id));
   }, []);
 
-  // Open server from dock
-  const handleOpenServer = useCallback((url: string, newTab = false) => {
-    if (newTab) {
-      handleNewTab(url);
-    } else {
-      handleNavigate(url);
-    }
-  }, [handleNewTab, handleNavigate]);
+  const handleMoveTab = useCallback((id: string, toIndex: number) => {
+    setSession((previous) => moveTab(previous, id, toIndex));
+  }, []);
 
-  // Listen for backend webview navigation & loading status events
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-    if (!isTauri) return;
+  const handleNewTab = useCallback((url = 'https://www.google.com') => {
+    const tab = createTab(`tab-${crypto.randomUUID()}`, url);
+    setSession((previous) => addTab(previous, tab));
+  }, []);
 
-    listen<{
-      url?: string;
-      title?: string;
-      isLoading?: boolean;
-      canGoBack?: boolean;
-      canGoForward?: boolean;
-    }>('webview-status', (event) => {
-      const payload = event.payload;
-      setTabs((prev) =>
-        prev.map((t) => {
-          if (t.id === activeTabId) {
-            const newUrl =
-              payload.url && !payload.url.startsWith('data:text/html')
-                ? payload.url
-                : t.url;
-            let newTitle = t.title;
-            if (payload.title && !payload.title.includes('AuraView')) {
-              newTitle = payload.title;
-            } else if (newUrl !== t.url) {
-              newTitle = newUrl.includes('google.com') ? 'Google' : newUrl;
-            }
+  const handleCloseTab = useCallback((id: string, event?: React.MouseEvent) => {
+    event?.stopPropagation();
+    const tab = tabs.find((item) => item.id === id);
+    if (tabs.length <= 1 || !tab) return;
+    setSession((previous) => closeTab(previous, id));
+    if (isTauri) invoke('close_browser_views', { views: tabViews(tab) }).catch(console.error);
+  }, [tabs, isTauri]);
 
-            return {
-              ...t,
-              url: newUrl,
-              inputUrl: newUrl,
-              title: newTitle,
-              isLoading: payload.isLoading !== undefined ? payload.isLoading : t.isLoading,
-              canGoBack: payload.canGoBack !== undefined ? payload.canGoBack : true,
-              canGoForward: payload.canGoForward !== undefined ? payload.canGoForward : true,
-            };
-          }
-          return t;
-        })
-      );
-    }).then((fn) => {
-      unlisten = fn;
+  const handleToggleSplit = useCallback(() => {
+    setSession(toggleSessionSplit);
+  }, []);
+
+  const handleSwapTabPages = useCallback((id: string) => {
+    setSession((previous) => ({ ...previous, activeTabId: id,
+      tabs: previous.tabs.map((tab) => tab.id === id ? swapTabPages(tab) : tab) }));
+  }, []);
+
+  const handleSplitResize = useCallback((id: string, ratio: number) => {
+    setSession((previous) => {
+      const tab = previous.tabs.find((item) => item.id === id);
+      if (!tab) return previous;
+      const resized = resizeTabSplit(tab, ratio);
+      return resized === tab ? previous : { ...previous,
+        tabs: previous.tabs.map((item) => item.id === id ? resized : item) };
     });
+  }, []);
 
-    return () => {
-      if (unlisten) unlisten();
-    };
-  }, [activeTabId]);
+  const handlePaneNavigate = useCallback((pane: BrowserPane, url: string) => {
+    const view = tabPageView(activeTab, pane);
+    updateStatus({ ...view, url, isLoading: true });
+    if (isTauri) invoke('navigate_browser_view', { ...view, url }).catch((error) => {
+      console.error('Navigation error:', error);
+      updateStatus({ ...view, isLoading: false });
+    });
+  }, [activeTab, isTauri, updateStatus]);
 
-  // Keyboard Shortcuts
+  const handlePaneAction = useCallback(async (pane: BrowserPane, action: 'reload' | 'back' | 'forward') => {
+    const view = tabPageView(activeTab, pane);
+    if (!isTauri) return;
+    if (action === 'reload') updateStatus({ ...view, isLoading: true });
+    const command = { reload: 'reload_browser_view', back: 'go_back_browser_view', forward: 'go_forward_browser_view' }[action];
+    try { await invoke(command, { ...view }); }
+    catch (error) {
+      console.error('Navigation action error:', error);
+      updateStatus({ ...view, isLoading: false });
+    }
+  }, [activeTab, isTauri, updateStatus]);
+
+  const handleOpenServer = useCallback((url: string, newTab = false) => {
+    if (newTab) handleNewTab(url);
+    else handlePaneNavigate(firstPane, url);
+  }, [handleNewTab, handlePaneNavigate, firstPane]);
+
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey || e.metaKey) {
-        if (e.key === 't' || e.key === 'T') {
-          e.preventDefault();
-          handleNewTab();
-        } else if (e.key === 'w' || e.key === 'W') {
-          e.preventDefault();
-          handleCloseTab(activeTabId);
-        } else if (e.key === 'r' || e.key === 'R') {
-          e.preventDefault();
-          handleReload();
-        } else if (e.key === '\\') {
-          e.preventDefault();
-          setIsSplitActive((prev) => !prev);
-        } else if (e.key === 'd' || e.key === 'D') {
-          e.preventDefault();
-          setShowAiDock((prev) => !prev);
+    if (!isTauri) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    listen<BrowserStatus>('webview-status', (event) => {
+      if (!disposed) updateStatus({ ...event.payload, tabId: event.payload.tabId || 'tab-1' });
+    }).then((stop) => { if (disposed) stop(); else unlisten = stop; });
+    return () => { disposed = true; unlisten?.(); };
+  }, [isTauri, updateStatus]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey) {
+        switch (event.key.toLowerCase()) {
+          case 't': event.preventDefault(); handleNewTab(); break;
+          case 'w': event.preventDefault(); handleCloseTab(activeTabId); break;
+          case 'r': event.preventDefault(); void handlePaneAction(firstPane, 'reload'); break;
+          case '\\': event.preventDefault(); handleToggleSplit(); break;
+          case 'd': event.preventDefault(); setShowAiDock((previous) => !previous); break;
         }
-      } else if (e.key === 'F5') {
-        e.preventDefault();
-        handleReload();
+      } else if (event.key === 'F5') {
+        event.preventDefault(); void handlePaneAction(firstPane, 'reload');
       }
     };
-
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeTabId, handleNewTab, handleCloseTab, handleReload]);
+  }, [activeTabId, handleNewTab, handleCloseTab, handlePaneAction, handleToggleSplit, firstPane]);
 
   return (
     <div className="flex flex-col h-screen w-screen bg-[#090c10] text-[#e4e7eb] overflow-hidden select-none">
-      {/* 1. Top Tab Strip */}
-      <TabBar
-        tabs={tabs}
-        activeTabId={activeTabId}
-        onSelectTab={handleSelectTab}
-        onCloseTab={handleCloseTab}
-        onNewTab={() => handleNewTab()}
-      />
-
-      {/* 2. Navigation Bar */}
-      <NavigationBar
-        url={activeTab?.url || ''}
-        isLoading={activeTab?.isLoading || false}
-        canGoBack={activeTab?.canGoBack !== false}
-        canGoForward={activeTab?.canGoForward !== false}
-        isSplitActive={isSplitActive}
-        vramSaverActive={vramSaverActive}
-        showAiDock={showAiDock}
-        onNavigate={handleNavigate}
-        onGoBack={handleGoBack}
-        onGoForward={handleGoForward}
-        onReload={handleReload}
-        onGoHome={() => handleNavigate('https://www.google.com')}
-        onToggleSplit={() => {
-          if (!isSplitActive && tabs.length > 1) {
-            const otherTab = tabs.find((t) => t.id !== activeTabId);
-            if (otherTab) setSplitTabId(otherTab.id);
-          }
-          setIsSplitActive(!isSplitActive);
-        }}
-        onToggleVramSaver={() => setVramSaverActive(!vramSaverActive)}
-        onToggleAiDock={() => setShowAiDock(!showAiDock)}
-      />
-
-      {/* 3. Localhost AI Servers Dock */}
+      <TabBar tabs={tabs} activeTabId={activeTabId} onSelectTab={handleSelectTab}
+        onCloseTab={handleCloseTab} onNewTab={() => handleNewTab()} onSwapTabPages={handleSwapTabPages}
+        onMoveTab={handleMoveTab} />
+      <NavigationBar key={`${activeTabId}:${firstPane}`} url={firstPage.url} isLoading={firstPage.isLoading}
+        canGoBack={firstPage.canGoBack} canGoForward={firstPage.canGoForward}
+        isSplitActive={isSplitActive} showAiDock={showAiDock}
+        onNavigate={(url) => handlePaneNavigate(firstPane, url)}
+        onGoBack={() => { void handlePaneAction(firstPane, 'back'); }}
+        onGoForward={() => { void handlePaneAction(firstPane, 'forward'); }}
+        onReload={() => { void handlePaneAction(firstPane, 'reload'); }}
+        onGoHome={() => handlePaneNavigate(firstPane, 'https://www.google.com')}
+        onToggleSplit={handleToggleSplit} onToggleAiDock={() => setShowAiDock((previous) => !previous)} />
       {showAiDock && <LocalhostDock onOpenServer={handleOpenServer} />}
-
-      {/* 4. Browser Webview Viewport */}
-      <WebviewContainer
-        activeTab={activeTab}
-        splitTab={splitTab}
-        isSplitActive={isSplitActive}
-        vramSaverActive={vramSaverActive}
-        showAiDock={showAiDock}
-      />
+      <WebviewContainer activeTab={activeTab} splitTab={activeTab.split || INITIAL_TAB}
+        onSplitResize={handleSplitResize}
+        isSplitActive={isSplitActive} showAiDock={showAiDock} onNavigate={handlePaneNavigate}
+        onReload={(pane) => { void handlePaneAction(pane, 'reload'); }}
+        onGoBack={(pane) => { void handlePaneAction(pane, 'back'); }}
+        onGoForward={(pane) => { void handlePaneAction(pane, 'forward'); }}
+        onPreviewLoad={(pane) => updateStatus({ ...tabPageView(activeTab, pane), isLoading: false })} />
     </div>
   );
 }

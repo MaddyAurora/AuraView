@@ -1,8 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Tab } from '../types/browser';
-import { Plus, X, Server, Globe, Loader2, Minus, Square, Copy, Terminal } from 'lucide-react';
+import { Plus, X, Server, Globe, Loader2, Minus, Square, Copy, Terminal, Link2, ArrowLeftRight } from 'lucide-react';
+import { orderedTabPages } from '../lib/tabState';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { useTabReorder } from '../hooks/useTabReorder';
+import { useTabSizing } from '../hooks/useTabSizing';
 
 interface TabBarProps {
   tabs: Tab[];
@@ -10,6 +13,8 @@ interface TabBarProps {
   onSelectTab: (id: string) => void;
   onCloseTab: (id: string, e: React.MouseEvent) => void;
   onNewTab: () => void;
+  onSwapTabPages: (id: string) => void;
+  onMoveTab: (id: string, toIndex: number) => void;
 }
 
 export const TabBar: React.FC<TabBarProps> = ({
@@ -18,8 +23,15 @@ export const TabBar: React.FC<TabBarProps> = ({
   onSelectTab,
   onCloseTab,
   onNewTab,
+  onSwapTabPages,
+  onMoveTab,
 }) => {
   const [isMaximized, setIsMaximized] = useState(false);
+  const stripRef = useRef<HTMLDivElement>(null);
+  const tabAreaRef = useRef<HTMLDivElement>(null);
+  const newTabRef = useRef<HTMLButtonElement>(null);
+  const tabDrag = useTabReorder(stripRef, tabs, onSelectTab, onMoveTab);
+  const tabSizes = useTabSizing(tabAreaRef, stripRef, newTabRef, tabs, Boolean(tabDrag.draggedTabId));
 
   // Keep track of maximized state
   useEffect(() => {
@@ -153,31 +165,53 @@ export const TabBar: React.FC<TabBarProps> = ({
       </div>
 
       {/* Tabs Container */}
+      <div ref={tabAreaRef} className="flex flex-1 min-w-0 h-full items-center">
       <div
-        className="flex items-center gap-1 overflow-x-auto h-full pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden shrink-0 max-w-[65%]"
+        ref={stripRef} {...tabDrag.stripEvents}
+        data-maximized={isMaximized}
+        onDoubleClick={(event) => event.stopPropagation()}
+        className="browser-tab-strip flex min-w-0 items-center overflow-x-auto h-full pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        style={{ cursor: tabDrag.draggedTabId ? 'grabbing' : undefined, width: tabSizes.stripWidth }}
         onMouseDown={(e) => {
           if (e.target === e.currentTarget) {
             handleStartDrag(e);
           }
         }}
       >
-        {tabs.map((tab) => {
+        {tabs.flatMap((tab) => {
           const isActive = tab.id === activeTabId;
-          const isLocalhost = tab.url.includes('localhost') || tab.url.includes('127.0.0.1');
+          const orderedPages = orderedTabPages(tab);
+          const pages = tab.splitEnabled ? orderedPages : orderedPages.slice(0, 1);
+          const linked = pages.length === 2;
+          const tabTitle = linked ? `${pages[0].page.title} | ${pages[1].page.title} (Split view)` : pages[0].page.title;
 
-          return (
+          return pages.map(({ page }, index) => {
+            const linkedFirst = linked && index === 0;
+            const linkedLast = linked && index === 1;
+            const isLocalhost = page.isAiServer || /^(https?:\/\/)?(localhost|127\.0\.0\.1|\[::1\])([:/]|$)/i.test(page.url);
+            return (
             <div
-              key={tab.id}
+              // Keep each page mounted when its split group becomes two tabs.
+              key={page.id}
+              data-tab-page={page.id}
+              data-tab-owner={tab.id}
+              onPointerDown={(event) => tabDrag.onPointerDown(event, tab.id)}
               onClick={() => onSelectTab(tab.id)}
               onMouseDown={(e) => e.stopPropagation()}
+              onDoubleClick={(event) => event.stopPropagation()}
               data-tauri-drag-region="false"
-              className={`group relative flex items-center gap-2 px-3 py-1.5 h-9 min-w-[120px] max-w-[200px] rounded-t-md text-xs font-medium cursor-pointer transition-all border-t border-x ${
+              title={tabTitle}
+              aria-label={tabTitle}
+              style={{ marginRight: linkedFirst ? 0 : 4,
+                borderTopLeftRadius: linkedLast ? 0 : 6, borderTopRightRadius: linkedFirst ? 0 : 6,
+                '--tab-width': `${tabSizes.widths[page.id] ?? 176}px` } as React.CSSProperties}
+              className={`browser-tab-page group relative flex min-w-0 shrink-0 items-center gap-2 px-3 py-1.5 h-9 text-xs font-medium cursor-pointer border-t border-x ${
                 isActive
                   ? 'bg-[#151e28] text-gray-100 border-[#374151] shadow-sm'
                   : 'bg-[#0f141b] text-gray-400 border-transparent hover:bg-[#121820] hover:text-gray-300'
-              }`}
+              } ${linkedFirst ? '!border-r-transparent' : ''} ${linkedLast ? '!border-l-transparent' : ''}`}
             >
-              {tab.isLoading ? (
+              {page.isLoading ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400 shrink-0" />
               ) : isLocalhost ? (
                 <Server className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-purple-400' : 'text-gray-500'}`} />
@@ -186,30 +220,49 @@ export const TabBar: React.FC<TabBarProps> = ({
               )}
 
               <span className="truncate flex-1 text-left select-none">
-                {tab.title || (isLocalhost ? 'Local AI Server' : 'New Tab')}
+                <span data-tab-title={page.id} className="inline-block whitespace-nowrap">
+                  {page.title || (isLocalhost ? 'Local AI Server' : 'New Tab')}
+                </span>
               </span>
+
+                <button type="button" onClick={(event) => { event.stopPropagation(); onSwapTabPages(tab.id); }}
+                  onMouseDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}
+                  title={linkedFirst ? 'Swap left and right pages' : undefined}
+                  aria-label={linkedFirst ? 'Swap left and right pages' : undefined}
+                  aria-hidden={!linkedFirst} disabled={!linkedFirst} tabIndex={linkedFirst ? 0 : -1}
+                  className={`group/swap absolute -right-2.5 top-1/2 z-10 -translate-y-1/2 flex h-5 w-5 items-center justify-center rounded text-purple-400 transition-opacity duration-200 motion-reduce:transition-none hover:text-cyan-300 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400 ${isActive ? 'bg-[#151e28]' : 'bg-[#0f141b]'} ${linkedFirst ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+                  <Link2 className="w-3.5 h-3.5 transition-opacity group-hover/swap:opacity-0 group-focus-visible/swap:opacity-0 pointer-events-none" aria-label={linkedFirst ? 'Linked split pages' : undefined} />
+                  <ArrowLeftRight className="absolute w-3.5 h-3.5 opacity-0 transition-opacity group-hover/swap:opacity-100 group-focus-visible/swap:opacity-100 pointer-events-none" aria-hidden="true" />
+                </button>
 
               <button
                 onClick={(e) => onCloseTab(tab.id, e)}
                 onMouseDown={(e) => e.stopPropagation()}
                 data-tauri-drag-region="false"
-                className={`p-0.5 rounded-sm hover:bg-gray-700/60 transition-opacity ${
-                  isActive ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-70 hover:!opacity-100'
+                disabled={linkedFirst} tabIndex={linkedFirst ? -1 : 0} aria-hidden={linkedFirst}
+                data-pair-hidden={linkedFirst}
+                className={`browser-tab-close shrink-0 rounded-sm hover:bg-gray-700/60 ${
+                  linkedFirst ? 'opacity-0 pointer-events-none' : isActive ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-70 hover:!opacity-100'
                 }`}
-                title="Close Tab (Ctrl+W)"
+                title={linked ? 'Close split tab (Ctrl+W)' : 'Close Tab (Ctrl+W)'}
               >
                 <X className="w-3 h-3" />
               </button>
 
-              {isActive && (
-                <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-purple-500 via-cyan-400 to-purple-500 rounded-t-sm" />
-              )}
+              <div aria-hidden="true"
+                style={{ left: linkedLast ? -1 : 0, right: linkedFirst ? -1 : 0,
+                  borderTopLeftRadius: linkedLast ? 0 : 2, borderTopRightRadius: linkedFirst ? 0 : 2 }}
+                className={`pointer-events-none absolute top-0 h-[2px] bg-gradient-to-r transition-opacity duration-200 motion-reduce:transition-none ${linkedFirst ? 'from-purple-500 to-cyan-400' : linkedLast ? 'from-cyan-400 to-purple-500' : 'from-purple-500 via-cyan-400 to-purple-500'} ${isActive ? 'opacity-100' : 'opacity-0'}`} />
             </div>
-          );
+            );
+          });
         })}
+      </div>
 
         <button
+          ref={newTabRef}
           onClick={onNewTab}
+          onDoubleClick={(event) => event.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
           data-tauri-drag-region="false"
           className="p-1.5 rounded-md text-gray-400 hover:text-gray-100 hover:bg-[#1f2937]/50 transition-colors ml-1 shrink-0 cursor-pointer"
@@ -217,7 +270,6 @@ export const TabBar: React.FC<TabBarProps> = ({
         >
           <Plus className="w-4 h-4 pointer-events-none" />
         </button>
-      </div>
 
       {/* Draggable space after tabs - fills remaining horizontal space */}
       <div
@@ -226,6 +278,7 @@ export const TabBar: React.FC<TabBarProps> = ({
         onDoubleClick={handleToggleMaximize}
         data-tauri-drag-region
       />
+      </div>
 
       {/* Window Controls & DevTools */}
       <div
