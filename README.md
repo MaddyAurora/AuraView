@@ -33,10 +33,25 @@ Modern browsers like Chrome and Edge frequently consume **1 GB to 3+ GB of RAM**
 - 🎬 **Hardware Video Playback:** Full support for HTML5 video, VP9, AV1, and YouTube media streaming.
 - ⌨️ **Productivity Hotkeys:**
   - `Ctrl + T`: New tab
-  - `Ctrl + W`: Close active tab
-  - `Ctrl + R`: Reload page
+  - `Ctrl + F4` / `Ctrl + W`: Close active tab (the last tab stays open)
+  - `Ctrl + Shift + F4`: Reopen the last closed tab, including split URLs and layout
+  - `Ctrl + Tab` / `Ctrl + Shift + Tab`: Next / previous tab (wraps around)
+  - `Ctrl + 1` through `Ctrl + 8`: Select numbered tab; `Ctrl + 9`: Last tab
+  - `Esc`: Stop loading (also dismisses native find/dialog UI)
+  - `Ctrl + R` / `Ctrl + F5` / `F5`: Reload page
+  - `Ctrl + F`: Find on page; `Ctrl + G` / `Ctrl + Shift + G`: Next / previous match
+  - `Space` / `Shift + Space`: Scroll down / up, with normal input and media behavior
+  - `Ctrl + P`: Print; `Ctrl + S`: Save page using the native Save As dialog
+  - `F11`: Toggle fullscreen; `F12`: Toggle the active page's developer tools
   - `Ctrl + \`: Toggle split-screen view
   - `Ctrl + D`: Toggle Local AI Dock
+
+Desktop shortcuts work from app controls and web content. Page commands use the last focused visible
+pane in split view. Closed tabs are remembered for this session (up to 20); reopening reloads their
+URLs with new navigation history. The browser-only Vite preview does not provide native page actions.
+
+Video/player fullscreen fills the display with the player and restores the previous window and
+split layout on exit. `F11` browser fullscreen keeps the tabs and address bar visible.
 
 ---
 

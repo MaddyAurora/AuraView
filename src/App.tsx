@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { BrowserPane } from './types/browser';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { BrowserPane, BrowserViewRef } from './types/browser';
+import { shortcutAction, ShortcutAction, spaceUsesControl } from './lib/shortcuts';
 import { BrowserStatus } from './lib/browserStatus';
-import { addTab, applyTabStatus, BrowserSession, closeTab, createTab, moveTab, orderedTabPages, resizeTabSplit, selectTab, swapTabPages, tabPageView, tabViews, toggleSessionSplit } from './lib/tabState';
+import { addTab, applyTabStatus, BrowserSession, closeTab, createTab, moveTab, orderedTabPages, reopenTab, resizeTabSplit, selectTab, switchTab, swapTabPages, tabPageView, tabViews, toggleSessionSplit } from './lib/tabState';
 import { TabBar } from './components/TabBar';
 import { NavigationBar } from './components/NavigationBar';
 import { LocalhostDock } from './components/LocalhostDock';
@@ -19,6 +20,7 @@ export function App() {
   const { pane: firstPane, page: firstPage } = orderedTabPages(activeTab)[0];
   const isSplitActive = Boolean(activeTab.splitEnabled && activeTab.split);
   const isTauri = '__TAURI_INTERNALS__' in window;
+  const focusedView = useRef<BrowserViewRef | undefined>();
 
   const updateStatus = useCallback((status: BrowserStatus) => {
     setSession((previous) => ({ ...previous, tabs: applyTabStatus(previous.tabs, status) }));
@@ -100,23 +102,67 @@ export function App() {
     return () => { disposed = true; unlisten?.(); };
   }, [isTauri, updateStatus]);
 
+  const runShortcut = useCallback((action: ShortcutAction, source?: BrowserViewRef) => {
+    if (action === 'new-tab') { handleNewTab(); return; }
+    if (action === 'close-tab') { handleCloseTab(activeTabId); return; }
+    if (action === 'reopen-tab') { setSession(reopenTab); return; }
+    if (action === 'next-tab' || action === 'previous-tab') {
+      setSession((previous) => switchTab(previous, action === 'next-tab' ? 1 : -1)); return;
+    }
+    if (action.startsWith('tab-')) {
+      const number = Number(action.slice(4));
+      setSession((previous) => {
+        const tab = previous.tabs[number === 9 ? previous.tabs.length - 1 : number - 1];
+        return tab ? selectTab(previous, tab.id) : previous;
+      });
+      return;
+    }
+    if (action === 'split') { handleToggleSplit(); return; }
+    if (action === 'ai-dock') { setShowAiDock((previous) => !previous); return; }
+    const visibleViews = isSplitActive ? tabViews(activeTab) : [tabPageView(activeTab, firstPane)];
+    const candidate = source || focusedView.current;
+    const view = visibleViews.find((item) => item.tabId === candidate?.tabId && item.pane === candidate.pane)
+      || tabPageView(activeTab, firstPane);
+    if (!isTauri) return;
+    if (action === 'reload') {
+      updateStatus({ ...view, isLoading: true });
+      invoke('reload_browser_view', { ...view }).catch((error) => {
+        console.error(error); updateStatus({ ...view, isLoading: false });
+      });
+    } else {
+      invoke('browser_page_action', { ...view, action }).catch(console.error);
+    }
+  }, [activeTab, activeTabId, firstPane, isSplitActive, isTauri, handleNewTab, handleCloseTab, handleToggleSplit, updateStatus]);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.ctrlKey || event.metaKey) {
-        switch (event.key.toLowerCase()) {
-          case 't': event.preventDefault(); handleNewTab(); break;
-          case 'w': event.preventDefault(); handleCloseTab(activeTabId); break;
-          case 'r': event.preventDefault(); void handlePaneAction(firstPane, 'reload'); break;
-          case '\\': event.preventDefault(); handleToggleSplit(); break;
-          case 'd': event.preventDefault(); setShowAiDock((previous) => !previous); break;
-        }
-      } else if (event.key === 'F5') {
-        event.preventDefault(); void handlePaneAction(firstPane, 'reload');
-      }
+      if (event.defaultPrevented || event.isComposing) return;
+      const action = shortcutAction(event);
+      if (!action || ((action === 'scroll-up' || action === 'scroll-down') && spaceUsesControl(event.target))) return;
+      event.preventDefault();
+      runShortcut(action);
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeTabId, handleNewTab, handleCloseTab, handlePaneAction, handleToggleSplit, firstPane]);
+  }, [runShortcut]);
+
+  const shortcutHandler = useRef(runShortcut);
+  shortcutHandler.current = runShortcut;
+  useEffect(() => {
+    if (!isTauri) return;
+    let disposed = false;
+    const stops: (() => void)[] = [];
+    const retain = (stop: () => void) => {
+      if (disposed) stop(); else stops.push(stop);
+    };
+    listen<{ action: ShortcutAction; view?: BrowserViewRef }>('browser-shortcut', (event) => {
+      shortcutHandler.current(event.payload.action, event.payload.view);
+    }).then(retain).catch(console.error);
+    listen<BrowserViewRef>('browser-focus', (event) => {
+      focusedView.current = event.payload;
+    }).then(retain).catch(console.error);
+    return () => { disposed = true; stops.forEach((stop) => stop()); };
+  }, [isTauri]);
 
   return (
     <div className="flex flex-col h-screen w-screen bg-[#090c10] text-[#e4e7eb] overflow-hidden select-none">

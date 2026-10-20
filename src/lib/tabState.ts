@@ -3,14 +3,14 @@ import type { BrowserStatus } from './browserStatus';
 import { applyBrowserStatus } from './browserStatus.ts';
 import { clampSplitRatio } from './splitResize.ts';
 
-export interface BrowserSession { tabs: Tab[]; activeTabId: string }
+export interface BrowserSession { tabs: Tab[]; activeTabId: string; closedTabs?: { tab: Tab; index: number }[] }
 
 export function selectTab(session: BrowserSession, id: string): BrowserSession {
   return session.tabs.some((tab) => tab.id === id) ? { ...session, activeTabId: id } : session;
 }
 
 export function addTab(session: BrowserSession, tab: Tab): BrowserSession {
-  return { tabs: [...session.tabs, tab], activeTabId: tab.id };
+  return { ...session, tabs: [...session.tabs, tab], activeTabId: tab.id };
 }
 
 export function moveTab(session: BrowserSession, id: string, toIndex: number): BrowserSession {
@@ -54,7 +54,7 @@ export function separateTabSplit(session: BrowserSession, id: string): BrowserSe
     const { split, splitEnabled, splitReversed, splitRatio, ...single } = page;
     return { ...single, view: tabPageView(tab, pane) };
   });
-  return { tabs: session.tabs.flatMap((item) => item.id === id ? pages : [item]),
+  return { ...session, tabs: session.tabs.flatMap((item) => item.id === id ? pages : [item]),
     activeTabId: session.activeTabId === id ? pages[0].id : session.activeTabId };
 }
 
@@ -102,5 +102,26 @@ export function applyTabStatus(tabs: Tab[], status: BrowserStatus): Tab[] {
 export function closeTab(session: BrowserSession, id: string): BrowserSession {
   if (session.tabs.length <= 1 || !session.tabs.some((tab) => tab.id === id)) return session;
   const tabs = session.tabs.filter((tab) => tab.id !== id);
-  return { tabs, activeTabId: session.activeTabId === id ? tabs[tabs.length - 1].id : session.activeTabId };
+  const index = session.tabs.findIndex((tab) => tab.id === id);
+  return { ...session, tabs, activeTabId: session.activeTabId === id ? tabs[tabs.length - 1].id : session.activeTabId,
+    closedTabs: [...(session.closedTabs || []), { tab: session.tabs[index], index }].slice(-20) };
+}
+
+export function reopenTab(session: BrowserSession): BrowserSession {
+  const closed = session.closedTabs?.[session.closedTabs.length - 1];
+  if (!closed) return session;
+  // Closed native views are retired permanently. Restore URLs/layout into fresh views.
+  const restore = (page: Tab): Tab => ({ ...page, id: `tab-${crypto.randomUUID()}`, view: undefined,
+    isLoading: true, canGoBack: false, canGoForward: false,
+    split: page.split ? restore(page.split) : undefined });
+  const tab = restore(closed.tab);
+  const tabs = [...session.tabs];
+  tabs.splice(Math.min(closed.index, tabs.length), 0, tab);
+  return { ...session, tabs, activeTabId: tab.id, closedTabs: session.closedTabs!.slice(0, -1) };
+}
+
+export function switchTab(session: BrowserSession, direction: number): BrowserSession {
+  const index = session.tabs.findIndex((tab) => tab.id === session.activeTabId);
+  const next = (index + direction + session.tabs.length) % session.tabs.length;
+  return selectTab(session, session.tabs[next].id);
 }

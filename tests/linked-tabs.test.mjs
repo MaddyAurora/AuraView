@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import ts from 'typescript';
-import { addTab, applyTabStatus, closeTab, createTab, enableTabSplit, orderedTabPages, selectTab, separateTabSplit, swapTabPages, tabPageView, tabViews, toggleSessionSplit } from '../src/lib/tabState.ts';
+import { addTab, applyTabStatus, closeTab, createTab, enableTabSplit, orderedTabPages, reopenTab, selectTab, separateTabSplit, swapTabPages, tabPageView, tabViews, toggleSessionSplit } from '../src/lib/tabState.ts';
 
 function splitTab(id, rightUrl = 'https://www.youtube.com') {
   const tab = enableTabSplit(createTab(id), `${id}-right`);
@@ -46,6 +46,33 @@ test('background title events update the owning split group and its correct side
   assert.equal(tabs[0].split.url, 'https://www.youtube.com/watch?v=test');
   assert.equal(tabs[1], second);
   assert.equal(tabs[1].split.title, 'YouTube');
+});
+
+test('same-document video navigation follows the owning pane and is retained when reopening', () => {
+  const paired = splitTab('youtube-pair', 'https://www.youtube.com/');
+  const normal = createTab('foreground');
+  let session = { tabs: [paired, normal], activeTabId: 'foreground' };
+  const view = tabPageView(paired, 'secondary');
+  for (const [url, canGoBack, canGoForward] of [
+    ['https://www.youtube.com/watch?v=first', true, false],
+    ['https://www.youtube.com/watch?v=second&list=mix', true, false],
+    ['https://www.youtube.com/watch?v=second&list=mix&t=30s', true, false],
+    ['https://www.youtube.com/watch?v=first', true, true],
+  ]) {
+    session = { ...session, tabs: applyTabStatus(session.tabs, {
+      ...view, url, isLoading: null, canGoBack, canGoForward,
+    }) };
+    assert.equal(session.tabs[0].split.url, url);
+    assert.equal(session.tabs[0].split.inputUrl, url);
+    assert.equal(session.tabs[0].split.isLoading, false);
+    assert.equal(session.tabs[0].split.canGoBack, canGoBack);
+    assert.equal(session.tabs[0].split.canGoForward, canGoForward);
+    assert.equal(session.tabs[0].url, paired.url);
+    assert.equal(session.tabs[1], normal);
+    assert.equal(session.activeTabId, normal.id);
+  }
+  session = reopenTab(closeTab(session, paired.id));
+  assert.equal(session.tabs[0].split.url, 'https://www.youtube.com/watch?v=first');
 });
 
 test('disabling split separates both pages beside each other and clears the pairing', () => {

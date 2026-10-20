@@ -6,6 +6,9 @@ use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Url, WebviewBuilder, WebviewUrl,
 };
 
+mod shortcuts;
+mod fullscreen;
+
 struct BrowserState {
     last_requested_url: String,
     offline_retry_target: Option<Url>,
@@ -871,21 +874,90 @@ fn go_forward_browser_view(app: AppHandle, pane: Option<String>, tab_id: Option<
     Ok(())
 }
 
+// A same-document navigation (pushState, replaceState, fragment, back/forward)
+// changes the address without starting or finishing a document load.
+fn location_status(state: &mut BrowserState, tab_id: &str, pane: &'static str,
+    url: &str, back: Option<bool>, forward: Option<bool>) -> WebviewStatusPayload {
+    let public_url = !url.is_empty() && url != "about:blank"
+        && !url.starts_with("data:text/html") && !url.starts_with("chrome-error://")
+        && !url.starts_with("edge://chromewebdata");
+    if public_url && state.last_requested_url != url {
+        state.generation += 1;
+        state.last_requested_url = url.to_string();
+        state.offline_retry_target = None;
+    }
+    WebviewStatusPayload { tab_id: tab_id.to_string(), pane,
+        url: public_url.then(|| url.to_string()), can_go_back: back, can_go_forward: forward,
+        ..Default::default() }
+}
+
+#[cfg(windows)]
+fn emit_native_location(app: &AppHandle,
+    core: &webview2_com_sys::Microsoft::Web::WebView2::Win32::ICoreWebView2,
+    state: &Arc<Mutex<BrowserState>>, tab_id: &str, pane: &'static str) -> windows_core::Result<()> {
+    unsafe {
+        let mut source = windows_core::PWSTR::null();
+        core.Source(&mut source)?;
+        let url = webview2_com::take_pwstr(source);
+        let mut back = windows_core::BOOL(0);
+        let mut forward = windows_core::BOOL(0);
+        let back = core.CanGoBack(&mut back).is_ok().then(|| back.as_bool());
+        let forward = core.CanGoForward(&mut forward).is_ok().then(|| forward.as_bool());
+        let status = location_status(&mut state.lock().unwrap(), tab_id, pane, &url, back, forward);
+        let _ = app.emit("webview-status", status);
+    }
+    Ok(())
+}
+
 fn emit_history_status(app: AppHandle, webview: &tauri::Webview, tab_id: &str, pane: &'static str) {
     let tab_id = tab_id.to_string();
     #[cfg(windows)]
     let _ = webview.with_webview(move |platform| unsafe {
         if let Ok(core) = platform.controller().CoreWebView2() {
-            let mut back = windows_core::BOOL(0);
-            let mut forward = windows_core::BOOL(0);
-            let _ = core.CanGoBack(&mut back);
-            let _ = core.CanGoForward(&mut forward);
-            let _ = app.emit("webview-status", WebviewStatusPayload {
-                tab_id, pane, can_go_back: Some(back.as_bool()), can_go_forward: Some(forward.as_bool()),
-                ..Default::default()
-            });
+            let _ = emit_native_location(&app, &core, &browser_state(&tab_id, pane), &tab_id, pane);
         }
     });
+}
+
+fn install_location_events(app: &AppHandle, webview: &tauri::Webview, tab_id: &str, pane: &'static str) -> tauri::Result<()> {
+    #[cfg(windows)]
+    {
+        let app = app.clone();
+        let tab_id = tab_id.to_string();
+        let state = browser_state(&tab_id, pane);
+        webview.with_webview(move |platform| unsafe {
+            use webview2_com::{SourceChangedEventHandler, HistoryChangedEventHandler};
+            if let Ok(core) = platform.controller().CoreWebView2() {
+                let source_app = app.clone();
+                let source_tab = tab_id.clone();
+                let source_state = state.clone();
+                let source = SourceChangedEventHandler::create(Box::new(move |sender, _| {
+                    if let Some(core) = sender {
+                        emit_native_location(&source_app, &core, &source_state, &source_tab, pane)?;
+                    }
+                    Ok(())
+                }));
+                let history_app = app.clone();
+                let history_tab = tab_id.clone();
+                let history_state = state.clone();
+                let history = HistoryChangedEventHandler::create(Box::new(move |sender, _| {
+                    if let Some(core) = sender {
+                        emit_native_location(&history_app, &core, &history_state, &history_tab, pane)?;
+                    }
+                    Ok(())
+                }));
+                let mut token = 0;
+                if let Err(error) = core.add_SourceChanged(&source, &mut token)
+                    .and_then(|_| core.add_HistoryChanged(&history, &mut token)) {
+                    eprintln!("Unable to track browser URL changes: {error}");
+                }
+                let _ = emit_native_location(&app, &core, &state, &tab_id, pane);
+            }
+        })?;
+    }
+    #[cfg(not(windows))]
+    let _ = (app, webview, tab_id, pane);
+    Ok(())
 }
 
 #[derive(serde::Deserialize, Clone, Copy, Debug)]
@@ -904,7 +976,7 @@ impl BrowserBounds {
     }
 }
 
-#[derive(serde::Deserialize, Clone, Debug)]
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 struct BrowserViewRef { tab_id: String, pane: String }
 
@@ -943,6 +1015,7 @@ async fn configure_browser_views(app: AppHandle, primary: BrowserBounds, seconda
     primary_view: Option<BrowserViewRef>, secondary_view: Option<BrowserViewRef>) -> Result<(), String> {
     let _layout = LAYOUT_LOCK.lock().unwrap();
     let layout = browser_layout(&tab_id, primary, secondary, reversed.unwrap_or(false), primary_view, secondary_view)?;
+    let layout = fullscreen::resolve_layout(&app, layout)?;
     let keys = layout.iter().map(|(view, _, _)| view.key()).collect::<Result<HashSet<_>, _>>()?;
     let labels = keys.iter().map(|(owner, pane)| browser_label(owner, pane)).collect::<Result<HashSet<_>, _>>()?;
     let states = {
@@ -992,6 +1065,7 @@ async fn resize_browser_views(app: AppHandle, primary: BrowserBounds, secondary:
     secondary_view: Option<BrowserViewRef>) -> Result<(), String> {
     let _layout = LAYOUT_LOCK.lock().unwrap();
     let layout = browser_layout(&tab_id, primary, secondary, reversed.unwrap_or(false), primary_view, secondary_view)?;
+    let layout = fullscreen::resolve_layout(&app, layout)?;
     for (view, bounds, _) in layout {
         let (owner, pane) = view.key()?;
         if registry().lock().unwrap().closed_views.contains(&(owner.clone(), pane)) { return Ok(()); }
@@ -1033,6 +1107,7 @@ fn get_split_drag_pointer(window: tauri::Window) -> Result<SplitDragPointer, Str
 async fn close_browser_views(app: AppHandle, views: Vec<BrowserViewRef>) -> Result<(), String> {
     let _layout = LAYOUT_LOCK.lock().unwrap();
     let keys = views.iter().map(BrowserViewRef::key).collect::<Result<Vec<_>, _>>()?;
+    fullscreen::closing_views(&app, &keys)?;
     {
         let mut registry = registry().lock().unwrap();
         retire_browser_views(&mut registry, &keys);
@@ -1159,6 +1234,11 @@ fn create_browser_view(app: &AppHandle, tab_id: &str, pane: &'static str, bounds
     let window = app.get_window("main").ok_or("Main window is not ready")?;
     let child = window.add_child(builder, LogicalPosition::new(bounds.x, bounds.y),
         LogicalSize::new(bounds.width, bounds.height)).map_err(|error| error.to_string())?;
+    install_location_events(app, &child, tab_id, pane).map_err(|error| error.to_string())?;
+    fullscreen::install(app, &child, BrowserViewRef { tab_id: tab_id.to_string(), pane: pane.to_string() })
+        .map_err(|error| error.to_string())?;
+    shortcuts::install(app, &child, Some(BrowserViewRef { tab_id: tab_id.to_string(), pane: pane.to_string() }))
+        .map_err(|error| error.to_string())?;
     let _ = child.with_webview(|platform| {
         #[cfg(windows)]
         unsafe {
@@ -1183,6 +1263,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
+            fullscreen::initialize(app.handle())?;
+            if let Some(main) = app.get_webview("main") { shortcuts::install(app.handle(), &main, None)?; }
             create_browser_view(app.handle(), "tab-1", "primary",
                 BrowserBounds { x: 0.0, y: 80.0, width: 1280.0, height: 760.0 },
                 Url::parse("https://www.google.com").unwrap(), true)?;
@@ -1193,7 +1275,7 @@ pub fn run() {
             app_is_maximized, app_close, app_start_dragging, app_open_devtools,
             navigate_browser_view, reload_browser_view, go_back_browser_view,
             go_forward_browser_view, configure_browser_views, resize_browser_views,
-            get_split_drag_pointer, close_browser_views
+            get_split_drag_pointer, close_browser_views, shortcuts::browser_page_action
         ])
         .run(tauri::generate_context!())
         .expect("error while running AuraView application");
@@ -1202,6 +1284,54 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_document_url_changes_update_the_address_and_reload_target_without_loading() {
+        let mut state = BrowserState::new(true);
+        state.last_requested_url = "https://www.youtube.com/".to_string();
+        for (url, back, forward) in [
+            ("https://www.youtube.com/watch?v=first", true, false),
+            ("https://www.youtube.com/watch?v=second&list=mix", true, false),
+            ("https://www.youtube.com/watch?v=second&list=mix&t=30s", true, false),
+            ("https://www.youtube.com/watch?v=first", true, true),
+            ("https://www.youtube.com/", false, true),
+        ] {
+            let previous_generation = state.generation;
+            let status = location_status(&mut state, "youtube", "secondary", url, Some(back), Some(forward));
+            assert_eq!(status.url.as_deref(), Some(url));
+            assert_eq!(status.is_loading, None);
+            assert_eq!(status.can_go_back, Some(back));
+            assert_eq!(status.can_go_forward, Some(forward));
+            assert_eq!(state.last_requested_url, url);
+            assert_eq!(state.generation, previous_generation + 1);
+            let json = serde_json::to_value(status).unwrap();
+            assert_eq!(json["tabId"], "youtube");
+            assert_eq!(json["pane"], "secondary");
+            assert_eq!(json["url"], url);
+        }
+        let generation = state.generation;
+        let url = state.last_requested_url.clone();
+        location_status(&mut state, "youtube", "secondary", &url, Some(false), Some(true));
+        assert_eq!(state.generation, generation);
+    }
+
+    #[test]
+    fn native_location_events_keep_internal_error_urls_and_blank_startup_out_of_the_address() {
+        let mut state = BrowserState::new(true);
+        let requested = "http://localhost:8188/workflow";
+        state.last_requested_url = requested.to_string();
+        state.offline_retry_target = Some(Url::parse(requested).unwrap());
+        for url in ["about:blank", "", "data:text/html;base64,error", "chrome-error://chromewebdata/", "edge://chromewebdata/"] {
+            let status = location_status(&mut state, "local", "primary", url, None, None);
+            assert_eq!(status.url, None);
+            assert_eq!(status.is_loading, None);
+            assert_eq!(state.last_requested_url, requested);
+            assert!(state.offline_retry_target.is_some());
+            assert_eq!(state.generation, 0);
+        }
+        location_status(&mut state, "local", "primary", "https://example.com/", Some(true), Some(false));
+        assert!(state.offline_retry_target.is_none());
+    }
 
     #[test]
     fn detached_pages_keep_native_identities_when_shown_alone_or_in_a_new_split() {
