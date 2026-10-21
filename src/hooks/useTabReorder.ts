@@ -19,7 +19,8 @@ interface DragSession {
 }
 
 function pageCards(strip: HTMLDivElement) {
-  return Array.from(strip.querySelectorAll<HTMLDivElement>('[data-tab-page]'));
+  return Array.from(strip.querySelectorAll<HTMLDivElement>('[data-tab-page]'))
+    .filter((card) => card.dataset.tabOverflow !== 'true');
 }
 
 export function useTabReorder(containerRef: RefObject<HTMLDivElement>, tabs: Tab[],

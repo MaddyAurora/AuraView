@@ -115,6 +115,21 @@ function harness(tabs, widths = {}) {
   };
 }
 
+test('overflow cards stay outside dragging and visible tabs keep their global order', () => {
+  const h = harness(['a', 'b', 'c', 'd'].map((id) => createTab(id)));
+  try {
+    h.cards.get('c').dataset.tabOverflow = 'true';
+    h.cards.get('d').dataset.tabOverflow = 'true';
+    h.api.onPointerDown(h.event(350), 'b');
+    h.api.stripEvents.onPointerMove(h.event(110));
+    assert.equal(h.cards.get('c').style.transform, undefined);
+    assert.equal(h.cards.get('d').style.transform, undefined);
+    h.api.stripEvents.onPointerUp(h.event(110));
+    h.flush();
+    assert.deepEqual(h.session.tabs.map((tab) => tab.id), ['b', 'a', 'c', 'd']);
+  } finally { h.dispose(); }
+});
+
 test('clicks and small pointer movements select normally without rearranging tabs', () => {
   const h = harness([createTab('a'), createTab('b')]);
   try {

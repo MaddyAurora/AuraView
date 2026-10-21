@@ -3,6 +3,33 @@ export const MAX_TAB_WIDTH = 176;
 export const TAB_GAP = 4;
 export const TAB_DRAG_SPACE = 30;
 
+export function overflowButtonWidth(count: number): number {
+  return count > 0 ? 40 + Math.max(0, String(count).length - 1) * 8 : 0;
+}
+
+// Each group contains one page or an indivisible linked pair. Reserve the
+// counter before choosing the last complete group that fits.
+export function fitTabGroups(groups: { id: string; preferred: number[] }[], available: number) {
+  const capacity = Math.max(0, available);
+  const minimums = [0];
+  for (const group of groups) minimums.push(minimums[minimums.length - 1] + group.preferred.length * MIN_TAB_WIDTH + TAB_GAP);
+  let visibleCount = groups.length;
+  if (minimums[visibleCount] > capacity) {
+    visibleCount = 0;
+    for (let count = 1; count <= groups.length; count++) {
+      if (minimums[count] + overflowButtonWidth(groups.length - count) > capacity) break;
+      visibleCount = count;
+    }
+  }
+  const hiddenCount = groups.length - visibleCount;
+  const counterWidth = overflowButtonWidth(hiddenCount);
+  const visible = groups.slice(0, visibleCount);
+  const gaps = visible.length * TAB_GAP;
+  const widths = fitTabWidths(visible.flatMap((group) => group.preferred), Math.max(0, capacity - counterWidth - gaps));
+  return { visibleCount, hiddenCount, counterWidth, widths,
+    stripWidth: widths.reduce((sum, width) => sum + width, gaps) };
+}
+
 export function naturalTabWidth(titleWidth: number, linkedFirst: boolean): number {
   // Padding, borders, favicon, gaps, and (except before a chain) the close button.
   const chrome = linkedFirst ? 48 : 72;

@@ -28,7 +28,7 @@ test('crowding lowers the largest widths first without stretching or prematurely
   assert.deepEqual(preferred, [90, 176, 176]);
 });
 
-test('tabs stop shrinking at a usable minimum and can overflow into horizontal scrolling', () => {
+test('width fitting keeps a usable minimum when capacity is exhausted', () => {
   assert.deepEqual(fitTabWidths([112, 176, 176, 90], 250), [80, 80, 80, 80]);
   assert.deepEqual(fitTabWidths([112, 176], 0), [80, 80]);
   assert.deepEqual(fitTabWidths([10, 1000], 500), [MIN_TAB_WIDTH, MAX_TAB_WIDTH]);

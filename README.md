@@ -29,6 +29,11 @@ Modern browsers like Chrome and Edge frequently consume **1 GB to 3+ GB of RAM**
   - **Pinokio** (`:42000`)
   - Quick custom port launcher (`:8000`, `:5000`, etc.)
 - 🪟 **Side-by-Side Split View:** Compare pages side-by-side (`Ctrl + \`).
+- **Tab overflow:** Tabs shrink to fit, then complete extra tabs move into a numbered dropdown.
+  Hover or click the count to select a hidden tab; linked split tabs stay together.
+- **Middle-click tabs:** Click the mouse wheel on a tab to close it. In a split, only the clicked page
+  closes; the other page becomes a normal tab and keeps its history and playback.
+- **Tab context menu:** Right-click a tab and choose **Close page** to close that specific page.
 - 🧠 **Smart Address Bar:** Intelligently identifies raw ports (`8188`), `localhost`, web URLs (`youtube.com`), or web search queries.
 - 🎬 **Hardware Video Playback:** Full support for HTML5 video, VP9, AV1, and YouTube media streaming.
 - ⌨️ **Productivity Hotkeys:**

@@ -59,6 +59,7 @@ async function harness() {
   const h = {
     calls, Element,
     get session() { return slots[0]; },
+    get tabBar() { return tree.props.children[0].props; },
     setSession(session) { slots[0] = session; dirty = true; },
     flush() {
       do {
@@ -148,6 +149,25 @@ test('shortcuts preserve input/control spaces, composed text, handled events and
     assert.equal(h.session.tabs.length, 1);
     h.key('8', { ctrlKey: true }); assert.equal(h.session.activeTabId, 'tab-1');
     h.key('F4', { ctrlKey: true }); assert.equal(h.session.tabs.length, 1);
+  } finally { h.dispose(); }
+});
+
+test('closing a split page from the tab bar retires only its native view', async () => {
+  const h = await harness();
+  try {
+    for (const pane of ['primary', 'secondary']) {
+      const pair = tabState.swapTabPages(tabState.enableTabSplit(tabState.createTab('pair'), 'right'));
+      h.setSession({ tabs: [pair], activeTabId: pair.id }); h.flush();
+      h.calls.length = 0;
+      h.tabBar.onCloseTabPage(pair.id, pane, { stopPropagation() {} }); h.flush();
+      assert.deepEqual(h.calls, [{ command: 'close_browser_views', args: { views: [tabState.tabPageView(pair, pane)] } }]);
+      assert.equal(h.session.tabs.length, 1);
+      assert.deepEqual(tabState.tabViews(h.session.tabs[0]), [tabState.tabPageView(pair, pane === 'primary' ? 'secondary' : 'primary')]);
+    }
+    h.calls.length = 0;
+    h.tabBar.onCloseTabPage(h.session.activeTabId, 'primary', { stopPropagation() {} }); h.flush();
+    assert.equal(h.session.tabs.length, 1);
+    assert.deepEqual(h.calls, []);
   } finally { h.dispose(); }
 });
 

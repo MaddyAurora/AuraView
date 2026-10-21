@@ -11,6 +11,17 @@
   transition: width 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
+/* Overflow changes are atomic: no partially animated tab at the counter edge. */
+.browser-tab-strip[data-tab-overflowing='true'] {
+  flex-shrink: 0;
+  transition: none;
+}
+
+.browser-tab-strip[data-tab-overflowing='true'] .browser-tab-page {
+  animation: none;
+  transition-property: background-color, color, border-color, box-shadow;
+}
+
 /* Keep page identities stable when pairs separate; size each page to its title
    and ease width changes as titles or the available space change. */
 .browser-tab-page {

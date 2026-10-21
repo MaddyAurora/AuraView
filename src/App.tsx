@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { BrowserPane, BrowserViewRef } from './types/browser';
 import { shortcutAction, ShortcutAction, spaceUsesControl } from './lib/shortcuts';
 import { BrowserStatus } from './lib/browserStatus';
-import { addTab, applyTabStatus, BrowserSession, closeTab, createTab, moveTab, orderedTabPages, reopenTab, resizeTabSplit, selectTab, switchTab, swapTabPages, tabPageView, tabViews, toggleSessionSplit } from './lib/tabState';
+import { addTab, applyTabStatus, BrowserSession, closeTab, closeTabPage, createTab, moveTab, orderedTabPages, reopenTab, resizeTabSplit, selectTab, switchTab, swapTabPages, tabPageView, tabViews, toggleSessionSplit } from './lib/tabState';
 import { TabBar } from './components/TabBar';
 import { NavigationBar } from './components/NavigationBar';
 import { LocalhostDock } from './components/LocalhostDock';
@@ -46,6 +46,14 @@ export function App() {
     setSession((previous) => closeTab(previous, id));
     if (isTauri) invoke('close_browser_views', { views: tabViews(tab) }).catch(console.error);
   }, [tabs, isTauri]);
+
+  const handleCloseTabPage = useCallback((id: string, pane: BrowserPane, event?: React.MouseEvent) => {
+    event?.stopPropagation();
+    const tab = tabs.find((item) => item.id === id);
+    if (!tab?.splitEnabled || !tab.split) { handleCloseTab(id); return; }
+    setSession((previous) => closeTabPage(previous, id, pane));
+    if (isTauri) invoke('close_browser_views', { views: [tabPageView(tab, pane)] }).catch(console.error);
+  }, [tabs, isTauri, handleCloseTab]);
 
   const handleToggleSplit = useCallback(() => {
     setSession(toggleSessionSplit);
@@ -167,7 +175,7 @@ export function App() {
   return (
     <div className="flex flex-col h-screen w-screen bg-[#090c10] text-[#e4e7eb] overflow-hidden select-none">
       <TabBar tabs={tabs} activeTabId={activeTabId} onSelectTab={handleSelectTab}
-        onCloseTab={handleCloseTab} onNewTab={() => handleNewTab()} onSwapTabPages={handleSwapTabPages}
+        onCloseTab={handleCloseTab} onCloseTabPage={handleCloseTabPage} onNewTab={() => handleNewTab()} onSwapTabPages={handleSwapTabPages}
         onMoveTab={handleMoveTab} />
       <NavigationBar key={`${activeTabId}:${firstPane}`} url={firstPage.url} isLoading={firstPage.isLoading}
         canGoBack={firstPage.canGoBack} canGoForward={firstPage.canGoForward}

@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import ts from 'typescript';
-import { addTab, applyTabStatus, closeTab, createTab, enableTabSplit, orderedTabPages, reopenTab, selectTab, separateTabSplit, swapTabPages, tabPageView, tabViews, toggleSessionSplit } from '../src/lib/tabState.ts';
+import { addTab, applyTabStatus, closeTab, closeTabPage, createTab, enableTabSplit, orderedTabPages, reopenTab, selectTab, separateTabSplit, swapTabPages, tabPageView, tabViews, toggleSessionSplit } from '../src/lib/tabState.ts';
 
 function splitTab(id, rightUrl = 'https://www.youtube.com') {
   const tab = enableTabSplit(createTab(id), `${id}-right`);
@@ -107,6 +107,46 @@ test('closing a split group selects another tab and ignores late page events', (
   assert.equal(closeTab(session, 'normal'), session);
 });
 
+test('closing either split page keeps the other native page alive, even in the last or swapped tab', () => {
+  for (const pane of ['primary', 'secondary']) for (const reversed of [false, true]) for (const legacy of [false, true]) {
+    const pair = { ...splitTab('pair'), splitReversed: reversed, splitRatio: 0.65, canGoBack: true };
+    pair.split.canGoForward = true;
+    if (legacy) delete pair.split.view;
+    const survivorPane = pane === 'primary' ? 'secondary' : 'primary';
+    const survivor = survivorPane === 'primary' ? pair : pair.split;
+    const survivingView = tabPageView(pair, survivorPane);
+    const closedView = tabPageView(pair, pane);
+    const session = closeTabPage({ tabs: [pair], activeTabId: pair.id }, pair.id, pane);
+    assert.equal(session.tabs.length, 1);
+    assert.equal(session.activeTabId, survivor.id);
+    assert.equal(session.tabs[0].url, survivor.url);
+    assert.equal(session.tabs[0].title, survivor.title);
+    assert.equal(session.tabs[0].canGoBack, survivor.canGoBack);
+    assert.equal(session.tabs[0].canGoForward, survivor.canGoForward);
+    assert.equal(session.tabs[0].isLoading, false);
+    assert.deepEqual(tabViews(session.tabs[0]), [survivingView]);
+    for (const field of ['split', 'splitEnabled', 'splitReversed', 'splitRatio']) assert.equal(session.tabs[0][field], undefined);
+    assert.equal(applyTabStatus(session.tabs, { ...closedView, title: 'Late closed-page update' }), session.tabs);
+    assert.equal(applyTabStatus(session.tabs, { ...survivingView, title: 'Still playing' })[0].title, 'Still playing');
+    const reopened = reopenTab(session);
+    const restored = reopened.tabs.find((tab) => tab.id === reopened.activeTabId);
+    assert.equal(restored.url, pane === 'primary' ? pair.url : pair.split.url);
+    assert.equal(restored.splitEnabled, undefined);
+    assert.deepEqual(tabViews(reopened.tabs.find((tab) => tab.id === survivor.id)), [survivingView]);
+  }
+});
+
+test('closing a background split page preserves the selected tab and its position', () => {
+  const before = createTab('before');
+  const pair = splitTab('pair');
+  const after = createTab('after');
+  const session = closeTabPage({ tabs: [before, pair, after], activeTabId: after.id }, pair.id, 'primary');
+  assert.deepEqual(session.tabs.map((tab) => tab.id), [before.id, pair.split.id, after.id]);
+  assert.equal(session.activeTabId, after.id);
+  assert.equal(session.tabs[0], before);
+  assert.equal(session.tabs[2], after);
+});
+
 test('swapping reverses both titles and pages while preserving their identities and histories', () => {
   const original = splitTab('pair');
   original.canGoBack = true;
@@ -187,6 +227,8 @@ test('the tab strip renders both real page titles as one linked split tab', () =
     : name === '../lib/tabState' ? { orderedTabPages }
     : name === '../hooks/useTabReorder' ? { useTabReorder: () => ({ draggedTabId: null, stripEvents: {}, onPointerDown() {} }) }
     : name === '../hooks/useTabSizing' ? { useTabSizing: () => ({ widths: {} }) }
+    : name === './TabOverflow' ? { TabOverflow: () => null }
+    : name === './TabContextMenu' ? { TabContextMenu: () => null }
     : require(name);
   new Function('require', 'exports', 'module', compiled)(requireComponent, module.exports, module);
   const html = renderToStaticMarkup(React.createElement(module.exports.TabBar, {

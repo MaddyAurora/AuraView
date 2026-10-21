@@ -1,17 +1,21 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Tab } from '../types/browser';
+import { BrowserPane, Tab } from '../types/browser';
 import { Plus, X, Server, Globe, Loader2, Minus, Square, Copy, Terminal, Link2, ArrowLeftRight } from 'lucide-react';
 import { orderedTabPages } from '../lib/tabState';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { listen } from '@tauri-apps/api/event';
 import { useTabReorder } from '../hooks/useTabReorder';
 import { useTabSizing } from '../hooks/useTabSizing';
+import { TabOverflow } from './TabOverflow';
+import { TabContextMenu, TabMenuTarget } from './TabContextMenu';
 
 interface TabBarProps {
   tabs: Tab[];
   activeTabId: string;
   onSelectTab: (id: string) => void;
   onCloseTab: (id: string, e: React.MouseEvent) => void;
+  onCloseTabPage: (id: string, pane: BrowserPane, e?: React.MouseEvent) => void;
   onNewTab: () => void;
   onSwapTabPages: (id: string) => void;
   onMoveTab: (id: string, toIndex: number) => void;
@@ -22,16 +26,39 @@ export const TabBar: React.FC<TabBarProps> = ({
   activeTabId,
   onSelectTab,
   onCloseTab,
+  onCloseTabPage,
   onNewTab,
   onSwapTabPages,
   onMoveTab,
 }) => {
   const [isMaximized, setIsMaximized] = useState(false);
+  const [contextMenu, setContextMenu] = useState<TabMenuTarget | null>(null);
   const stripRef = useRef<HTMLDivElement>(null);
   const tabAreaRef = useRef<HTMLDivElement>(null);
   const newTabRef = useRef<HTMLButtonElement>(null);
   const tabDrag = useTabReorder(stripRef, tabs, onSelectTab, onMoveTab);
   const tabSizes = useTabSizing(tabAreaRef, stripRef, newTabRef, tabs, Boolean(tabDrag.draggedTabId));
+  const visibleCount = tabSizes.visibleCount ?? tabs.length;
+  const hiddenTabs = tabs.slice(visibleCount);
+  const pageActions = useRef({ tabs, onCloseTabPage });
+  pageActions.current = { tabs, onCloseTabPage };
+  const closePage = (pageId: string) => {
+    // Resolve the current owner because a page can move out of a split while
+    // the native popup is open. Its stable page ID still selects the right one.
+    for (const owner of pageActions.current.tabs) {
+      const entry = orderedTabPages(owner).find(({ page }) => page.id === pageId);
+      if (entry) { pageActions.current.onCloseTabPage(owner.id, entry.pane); break; }
+    }
+  };
+
+  useEffect(() => {
+    if (!('__TAURI_INTERNALS__' in window)) return;
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    listen<string>('tab-context-close-page', (event) => closePage(event.payload))
+      .then((unlisten) => { if (disposed) unlisten(); else stop = unlisten; }).catch(console.error);
+    return () => { disposed = true; stop?.(); };
+  }, []);
 
   // Keep track of maximized state
   useEffect(() => {
@@ -170,7 +197,8 @@ export const TabBar: React.FC<TabBarProps> = ({
         ref={stripRef} {...tabDrag.stripEvents}
         data-maximized={isMaximized}
         onDoubleClick={(event) => event.stopPropagation()}
-        className="browser-tab-strip flex min-w-0 items-center overflow-x-auto h-full pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        data-tab-overflowing={hiddenTabs.length > 0}
+        className="browser-tab-strip flex min-w-0 items-center overflow-hidden h-full pt-1"
         style={{ cursor: tabDrag.draggedTabId ? 'grabbing' : undefined, width: tabSizes.stripWidth }}
         onMouseDown={(e) => {
           if (e.target === e.currentTarget) {
@@ -178,14 +206,14 @@ export const TabBar: React.FC<TabBarProps> = ({
           }
         }}
       >
-        {tabs.flatMap((tab) => {
+        {tabs.flatMap((tab, tabIndex) => {
           const isActive = tab.id === activeTabId;
           const orderedPages = orderedTabPages(tab);
           const pages = tab.splitEnabled ? orderedPages : orderedPages.slice(0, 1);
           const linked = pages.length === 2;
           const tabTitle = linked ? `${pages[0].page.title} | ${pages[1].page.title} (Split view)` : pages[0].page.title;
 
-          return pages.map(({ page }, index) => {
+          return pages.map(({ pane, page }, index) => {
             const linkedFirst = linked && index === 0;
             const linkedLast = linked && index === 1;
             const isLocalhost = page.isAiServer || /^(https?:\/\/)?(localhost|127\.0\.0\.1|\[::1\])([:/]|$)/i.test(page.url);
@@ -195,14 +223,32 @@ export const TabBar: React.FC<TabBarProps> = ({
               key={page.id}
               data-tab-page={page.id}
               data-tab-owner={tab.id}
+              data-tab-overflow={tabIndex >= visibleCount}
+              aria-hidden={tabIndex >= visibleCount}
               onPointerDown={(event) => tabDrag.onPointerDown(event, tab.id)}
               onClick={() => onSelectTab(tab.id)}
-              onMouseDown={(e) => e.stopPropagation()}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                const target = { pageId: page.id, x: event.clientX, y: event.clientY, canClose: linked || tabs.length > 1 };
+                if ('__TAURI_INTERNALS__' in window) invoke('show_tab_context_menu', target).catch(console.error);
+                else setContextMenu(target);
+              }}
+              onAuxClick={(event) => {
+                if (event.button !== 1) return;
+                event.preventDefault();
+                event.stopPropagation();
+                onCloseTabPage(tab.id, pane, event);
+              }}
+              onMouseDown={(event) => {
+                event.stopPropagation();
+                if (event.button === 1) event.preventDefault();
+              }}
               onDoubleClick={(event) => event.stopPropagation()}
               data-tauri-drag-region="false"
               title={tabTitle}
               aria-label={tabTitle}
-              style={{ marginRight: linkedFirst ? 0 : 4,
+              style={{ display: tabIndex >= visibleCount ? 'none' : undefined, marginRight: linkedFirst ? 0 : 4,
                 borderTopLeftRadius: linkedLast ? 0 : 6, borderTopRightRadius: linkedFirst ? 0 : 6,
                 '--tab-width': `${tabSizes.widths[page.id] ?? 176}px` } as React.CSSProperties}
               className={`browser-tab-page group relative flex min-w-0 shrink-0 items-center gap-2 px-3 py-1.5 h-9 text-xs font-medium cursor-pointer border-t border-x ${
@@ -258,6 +304,8 @@ export const TabBar: React.FC<TabBarProps> = ({
           });
         })}
       </div>
+
+        <TabOverflow tabs={hiddenTabs} activeTabId={activeTabId} onSelect={onSelectTab} />
 
         <button
           ref={newTabRef}
@@ -331,6 +379,8 @@ export const TabBar: React.FC<TabBarProps> = ({
           <X className="w-3.5 h-3.5 pointer-events-none" />
         </button>
       </div>
+      {contextMenu && <TabContextMenu target={contextMenu} onDismiss={() => setContextMenu(null)}
+        onClosePage={closePage} />}
     </div>
   );
 };

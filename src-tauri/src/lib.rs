@@ -8,6 +8,8 @@ use tauri::{
 
 mod shortcuts;
 mod fullscreen;
+mod tab_overflow;
+mod tab_context_menu;
 
 struct BrowserState {
     last_requested_url: String,
@@ -1262,6 +1264,10 @@ fn create_browser_view(app: &AppHandle, tab_id: &str, pane: &'static str, bounds
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .on_menu_event(|app, event| {
+            tab_overflow::selected(app, event.id().as_ref());
+            tab_context_menu::selected(app, event.id().as_ref());
+        })
         .setup(|app| {
             fullscreen::initialize(app.handle())?;
             if let Some(main) = app.get_webview("main") { shortcuts::install(app.handle(), &main, None)?; }
@@ -1275,7 +1281,8 @@ pub fn run() {
             app_is_maximized, app_close, app_start_dragging, app_open_devtools,
             navigate_browser_view, reload_browser_view, go_back_browser_view,
             go_forward_browser_view, configure_browser_views, resize_browser_views,
-            get_split_drag_pointer, close_browser_views, shortcuts::browser_page_action
+            get_split_drag_pointer, close_browser_views, shortcuts::browser_page_action, tab_overflow::show_tab_overflow,
+            tab_context_menu::show_tab_context_menu
         ])
         .run(tauri::generate_context!())
         .expect("error while running AuraView application");

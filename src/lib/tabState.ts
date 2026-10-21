@@ -107,6 +107,24 @@ export function closeTab(session: BrowserSession, id: string): BrowserSession {
     closedTabs: [...(session.closedTabs || []), { tab: session.tabs[index], index }].slice(-20) };
 }
 
+export function closeTabPage(session: BrowserSession, id: string, pane: BrowserPane): BrowserSession {
+  const index = session.tabs.findIndex((tab) => tab.id === id);
+  const tab = session.tabs[index];
+  if (!tab?.splitEnabled || !tab.split) return pane === 'primary' ? closeTab(session, id) : session;
+  const single = (page: Tab, pagePane: BrowserPane): Tab => {
+    const { split, splitEnabled, splitReversed, splitRatio, ...rest } = page;
+    return { ...rest, view: tabPageView(tab, pagePane) };
+  };
+  const closed = single(pane === 'primary' ? tab : tab.split, pane);
+  const remaining = single(pane === 'primary' ? tab.split : tab, pane === 'primary' ? 'secondary' : 'primary');
+  const closedIndex = index + orderedTabPages(tab).findIndex((page) => page.pane === pane);
+  return { ...session,
+    tabs: session.tabs.map((item) => item.id === id ? remaining : item),
+    activeTabId: session.activeTabId === id ? remaining.id : session.activeTabId,
+    closedTabs: [...(session.closedTabs || []), { tab: closed, index: closedIndex }].slice(-20),
+  };
+}
+
 export function reopenTab(session: BrowserSession): BrowserSession {
   const closed = session.closedTabs?.[session.closedTabs.length - 1];
   if (!closed) return session;
