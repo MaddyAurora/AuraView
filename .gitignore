@@ -27,3 +27,8 @@ Thumbs.db
 .idea/
 *.suo
 *.user
+
+# Verified video helper binaries are fetched during desktop dev/release builds.
+src-tauri/resources/download-tools/*
+!src-tauri/resources/download-tools/NOTICE.md
+!src-tauri/resources/download-tools/*LICENSE*.txt

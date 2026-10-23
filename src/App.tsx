@@ -9,6 +9,7 @@ import { NavigationBar } from './components/NavigationBar';
 import { LocalhostDock } from './components/LocalhostDock';
 import { BookmarksBar } from './components/BookmarksBar';
 import { WebviewContainer } from './components/WebviewContainer';
+import { VideoDownloads, useVideoDownloads, downloadBusy } from './components/VideoDownloads';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
@@ -18,6 +19,8 @@ export function App() {
   const [session, setSession] = useState<BrowserSession>({ tabs: [INITIAL_TAB], activeTabId: INITIAL_TAB.id });
   const [showAiDock, setShowAiDock] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
+  const [showDownloads, setShowDownloads] = useState(false);
+  const videoDownloads = useVideoDownloads();
   const [bookmarkDialogOpen, setBookmarkDialogOpen] = useState(false);
   const { tabs, activeTabId } = session;
   const activeTab = tabs.find((tab) => tab.id === activeTabId) || tabs[0];
@@ -238,7 +241,10 @@ export function App() {
         onReload={() => { void handlePaneAction(firstPane, 'reload'); }}
         onGoHome={() => handlePaneNavigate(firstPane, 'https://www.google.com')}
         onToggleSplit={handleToggleSplit} onToggleAiDock={() => setShowAiDock((previous) => !previous)}
-        onToggleBookmarks={() => setShowBookmarks((previous) => !previous)} />
+        onToggleBookmarks={() => setShowBookmarks((previous) => !previous)}
+        showDownloads={showDownloads} downloadCount={videoDownloads.filter((item) => downloadBusy(item.status)).length}
+        onToggleDownloads={() => setShowDownloads((previous) => !previous)} />
+      {showDownloads && <VideoDownloads downloads={videoDownloads} onClose={() => setShowDownloads(false)} />}
       <BookmarksBar visible={showBookmarks} getCurrentPage={() => bookmarkPage().page}
         onOpen={(url, newTab) => { if (newTab) handleNewTab(url); else handlePaneNavigate(bookmarkPage().pane, url); }}
         onDialogChange={setBookmarkDialogOpen} />

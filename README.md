@@ -47,6 +47,24 @@ Modern browsers like Chrome and Edge frequently consume **1 GB to 3+ GB of RAM**
   with mouse events disabled are supported; carousels target the visible slide. Very small images without room for a button are skipped.
   To check the feature in desktop dev, open `http://localhost:1420/tests/fixtures/image-download.html`.
   Scrolling and lazy-feed checks are at `http://localhost:1420/tests/fixtures/image-download-feed.html`.
+- **Video downloads (Windows desktop):** Hover a loaded video to reveal a download button in its
+  top-right corner. Paused videos, transparent player covers, embedded frames, split panes, and player
+  fullscreen are supported. Click to download; click again during a download to cancel. The toolbar's
+  Downloads button shows progress, completion, errors, and retry/cancel actions after scrolling or
+  navigating away. Files go to Windows Downloads with numbered names rather than overwriting.
+  Direct files and complete video blobs use the browser session. YouTube, Instagram, and other
+  supported streaming sites use the bundled yt-dlp engine, Deno, and FFmpeg to resolve the best available
+  quality and combine audio where provided. MP4 is preferred when available at that quality; other
+  source codecs may produce WebM/MKV without transcoding. Ambiguous feeds ask you to open the individual
+  video instead of downloading another post. DRM media and live-stream recording are not supported.
+  Some sites require an active login or may need an engine update when their players change.
+  Desktop checks: `http://localhost:1420/tests/fixtures/video-download.html`.
+  X/Twitter timeline cards also resolve their own status links. When webpage extraction fails,
+  a fallback can use an observed HLS/DASH playlist or video/audio requests attributable to the
+  selected MediaSource player. Advertisements use their own playing stream rather than a YouTube
+  watch URL. Unidentifiable or ambiguous streams remain unavailable; complete fallback files are
+  checked against the player's duration before saving. Stream checks:
+  `http://localhost:1420/tests/fixtures/video-stream-fallback.html`.
 - **Bookmarks:** Click the bookmark icon to the left of **AI Dock** to toggle the bookmarks bar.
   Right-click the bar and choose **Add current page…**, or click its **+** button. Edit the prefilled
   title and link, then choose **Root**, **Create folder…**, or an existing folder. Root bookmarks
@@ -96,6 +114,22 @@ split layout on exit. `F11` browser fullscreen keeps the tabs and address bar vi
 
 ### Installation
 Just download and install the latest binary executable at https://github.com/MaddyAurora/AuraView/releases
+
+### Desktop development
+
+Run `npm install`, then `npm run tauri -- dev` (or `start-desktop-dev.bat`). The first desktop run
+downloads the video helpers from official releases and verifies their pinned SHA-256 checksums.
+Subsequent launches verify and reuse the local copies. Release builds bundle the same tools, so
+installed users do not need Python, FFmpeg, or Deno on their PATH. The Vite-only preview (`npm run dev`)
+does not provide native download actions.
+
+Helper versions and archive checksums are in `scripts/video-tools.json`. To update the engine,
+review the new official release, update its version, URL, and checksum there, then run
+`npm run prepare:video-tools`. The script replaces changed tools and refreshes its verification receipt.
+See `src-tauri/resources/download-tools/NOTICE.md` for helper licenses and source links.
+
+Validation: `npm run build`, `node --test tests/*.test.mjs`, and
+`cargo test --manifest-path src-tauri/Cargo.toml --lib`.
 
 ---
 

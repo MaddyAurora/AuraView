@@ -1,12 +1,13 @@
 {
   "name": "auraview",
   "private": true,
-  "version": "0.2.5",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "prepare:video-tools": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-video-tools.ps1",
     "tauri": "tauri"
   },
   "dependencies": {

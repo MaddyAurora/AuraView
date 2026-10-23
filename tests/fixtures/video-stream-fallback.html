@@ -1,0 +1,6 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AuraView playing-stream fallback checks</title>
+<style>body{margin:30px;background:#090c10;color:#e2e8f0;font:15px/1.6 system-ui}main{max-width:1000px;margin:auto}.grid{display:grid;grid-template-columns:1fr 1fr;gap:24px}video{display:block;width:100%;aspect-ratio:16/9;background:black}p{color:#94a3b8}section{padding:16px;border:1px solid #334155;border-radius:12px}</style>
+<main><h1>Playing-stream fallback</h1><p>These two independent MediaSource players expose blob URLs, without a post URL or downloadable HTML source. Their media files are loaded by an external script. Hover and download either one: the exact selected player should save with audio, while this page stays open.</p>
+<div class="grid"><section><h2>Stream A · combined video/audio</h2><video controls preload="auto" aria-label="AuraView stream A"></video></section><section><h2>Stream B · separate video/audio</h2><video controls preload="auto" aria-label="AuraView stream B"></video></section></div><p id="status">Loading streams…</p></main>
+<script src="./video-stream-fixture.js"></script></html>

@@ -79,7 +79,7 @@ fn find_resource(tree: &Value, url: &str) -> Option<(String, String)> {
     tree["childFrames"].as_array()?.iter().find_map(|child| find_resource(child, url))
 }
 
-fn frame_for_source(tree: &Value, source: &str) -> Option<String> {
+pub(crate) fn frame_for_source(tree: &Value, source: &str) -> Option<String> {
     let without_fragment = |url: &str| url.split('#').next().unwrap_or("").to_string();
     if tree["frame"]["url"].as_str().is_some_and(|url| without_fragment(url) == without_fragment(source)) {
         return tree["frame"]["id"].as_str().map(str::to_string);
@@ -166,7 +166,7 @@ where F: FnMut(&'static str, Value) -> Fut, Fut: std::future::Future<Output = Re
 }
 
 #[cfg(windows)]
-async fn devtools(webview: &tauri::Webview, method: &str, params: Value) -> Result<Value, String> {
+pub(crate) async fn devtools(webview: &tauri::Webview, method: &str, params: Value) -> Result<Value, String> {
     let method = method.to_string();
     let (sender, receiver) = std::sync::mpsc::channel();
     webview.with_webview(move |platform| unsafe {

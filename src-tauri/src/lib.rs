@@ -12,6 +12,7 @@ mod tab_overflow;
 mod tab_context_menu;
 mod tab_audio;
 mod image_download;
+mod video_download;
 mod bookmark_menu;
 mod bookmark_editor;
 mod bookmark_folder;
@@ -1180,9 +1181,11 @@ fn create_browser_view(app: &AppHandle, tab_id: &str, pane: &'static str, bounds
     let app_load = app.clone();
     let app_title = app.clone();
     let image_token = image_download::token();
+    let video_token = image_download::token();
     let builder = WebviewBuilder::new(label, WebviewUrl::External(initial_browser_url(&initial_url)))
         .focused(focused)
         .initialization_script_for_all_frames(image_download::script(&image_token))
+        .initialization_script_for_all_frames(video_download::script(&video_token))
         .on_navigation(move |url| {
             if url.as_str() == "about:blank" { return true; }
             if url.as_str() == "https://auraview.invalid/retry-local-server" {
@@ -1266,6 +1269,7 @@ fn create_browser_view(app: &AppHandle, tab_id: &str, pane: &'static str, bounds
     let child = window.add_child(builder, LogicalPosition::new(bounds.x, bounds.y),
         LogicalSize::new(bounds.width, bounds.height)).map_err(|error| error.to_string())?;
     image_download::install(app, &child, image_token).map_err(|error| error.to_string())?;
+    video_download::install(app, &child, video_token).map_err(|error| error.to_string())?;
     install_location_events(app, &child, tab_id, pane).map_err(|error| error.to_string())?;
     fullscreen::install(app, &child, BrowserViewRef { tab_id: tab_id.to_string(), pane: pane.to_string() })
         .map_err(|error| error.to_string())?;
@@ -1322,6 +1326,7 @@ pub fn run() {
             get_split_drag_pointer, close_browser_views, shortcuts::browser_page_action, tab_overflow::show_tab_overflow,
             tab_context_menu::show_tab_context_menu, bookmark_menu::show_bookmark_menu,
             tab_audio::set_browser_muted,
+            video_download::list_video_downloads, video_download::cancel_video_download, video_download::retry_video_download,
             bookmark_editor::show_bookmark_editor, bookmark_editor::get_bookmark_editor, bookmark_editor::close_bookmark_editor,
             bookmark_folder::show_bookmark_folder, bookmark_folder::get_bookmark_folder, bookmark_folder::close_bookmark_folder
         ])

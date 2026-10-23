@@ -44,6 +44,7 @@ async function harness() {
     compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2020 },
   }).outputText;
   const module = { exports: {} };
+  const components = new Map();
   const require = (name) => {
     if (name === 'react') return hooks;
     if (name === './lib/tabState') return tabState;
@@ -52,7 +53,11 @@ async function harness() {
     if (name === '@tauri-apps/api/event') return { listen: async (name, fn) => {
       native.set(name, fn); return () => { if (native.get(name) === fn) native.delete(name); };
     } };
-    if (name.startsWith('./components/')) return { [name.split('/').pop()]: () => null };
+    if (name === './components/VideoDownloads') return { VideoDownloads: () => null, useVideoDownloads: () => [], downloadBusy: () => false };
+    if (name.startsWith('./components/')) {
+      const key = name.split('/').pop(), component = () => null;
+      components.set(key, component); return { [key]: component };
+    }
     assert.fail(`Unexpected import: ${name}`);
   };
   new Function('require', 'module', 'exports', compiled)(require, module, module.exports);
@@ -60,8 +65,8 @@ async function harness() {
     calls, Element,
     get session() { return slots[0]; },
     get tabBar() { return tree.props.children[0].props; },
-    get bookmarks() { return tree.props.children[2].props; },
-    get webviews() { return tree.props.children[4].props; },
+    get bookmarks() { return tree.props.children.find((child) => child?.type === components.get('BookmarksBar')).props; },
+    get webviews() { return tree.props.children.find((child) => child?.type === components.get('WebviewContainer')).props; },
     setSession(session) { slots[0] = session; dirty = true; },
     flush() {
       do {
