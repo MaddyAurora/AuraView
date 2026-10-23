@@ -34,6 +34,20 @@ export const WebviewContainer: React.FC<WebviewContainerProps> = ({ activeTab, s
   const configuredLayout = useRef('');
   const [secondaryReady, setSecondaryReady] = useState(!isTauri);
   const [layoutError, setLayoutError] = useState(false);
+  const [reloadVersions, setReloadVersions] = useState<Record<string, number>>({});
+  const audioRef = useRef({ primaryMuted: Boolean(activeTab.isMuted), secondaryMuted: Boolean(splitTab.isMuted) });
+  audioRef.current = { primaryMuted: Boolean(activeTab.isMuted), secondaryMuted: Boolean(splitTab.isMuted) };
+
+  useEffect(() => {
+    if (isTauri) return;
+    const reload = (event: Event) => {
+      const view = (event as CustomEvent<{ tabId: string; pane: BrowserPane }>).detail;
+      const key = `${view.tabId}:${view.pane}`;
+      setReloadVersions((previous) => ({ ...previous, [key]: (previous[key] || 0) + 1 }));
+    };
+    window.addEventListener('browser-preview-reload', reload);
+    return () => window.removeEventListener('browser-preview-reload', reload);
+  }, [isTauri]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -73,6 +87,7 @@ export const WebviewContainer: React.FC<WebviewContainerProps> = ({ activeTab, s
           try {
             const command = configuredLayout.current === mode ? 'resize_browser_views' : 'configure_browser_views';
             await invoke(command, { primary, secondary, rightUrl, primaryUrl, tabId, primaryView, secondaryView,
+              ...audioRef.current,
               reversed: Boolean(activeTab.splitReversed) });
             configuredLayout.current = mode;
             if (!disposed) { setSecondaryReady(isSplitActive); setLayoutError(false); }
@@ -107,7 +122,7 @@ export const WebviewContainer: React.FC<WebviewContainerProps> = ({ activeTab, s
       <div ref={ref} className="relative flex-1 min-h-0 overflow-hidden bg-[#090c10]">
         {isTauri ? <div className="flex h-full items-center justify-center text-gray-500 text-xs pointer-events-none">
           {layoutError ? 'Unable to open the browser pane.' : `Connecting to ${tab.url}...`}
-        </div> : <iframe key={`${activeTab.id}:${pane}:${tab.url}`} src={tab.url} title={side === 'left' ? `Left: ${tab.title}` : `Right: ${tab.title}`}
+        </div> : <iframe key={`${activeTab.id}:${pane}:${tab.url}:${reloadVersions[`${tabPageView(activeTab, pane).tabId}:${tabPageView(activeTab, pane).pane}`] || 0}`} src={tab.url} title={side === 'left' ? `Left: ${tab.title}` : `Right: ${tab.title}`}
           className="w-full h-full border-0 bg-white" onLoad={() => onPreviewLoad(pane)}
           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; camera; microphone; display-capture; fullscreen" allowFullScreen />}
       </div>

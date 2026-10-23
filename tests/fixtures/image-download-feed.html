@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Scrolling image feed checks</title>
+<style>
+  html{overflow:visible}body{height:100vh;overflow-x:hidden;margin:0;background:#090c10;color:#e2e8f0;font:16px/1.6 system-ui}
+  main{max-width:640px;margin:auto;padding:32px}p{color:#94a3b8}article{margin:100px 0 180px}
+  .photo{position:relative;overflow:hidden;border-radius:12px}.photo img{display:block;width:100%;pointer-events:none}
+  .cover,.layer{position:absolute;inset:0}.cover{cursor:pointer}.cover span{position:absolute;top:10px;left:12px;color:white}
+</style>
+<main>
+  <h1>Scrolling photo feed</h1>
+  <p>Scroll through all four photos and save them directly from the feed, including when only part of a photo is visible.
+    Each saves as feed-photo-N.svg. The last two photos are added later. Opening a larger view is unnecessary.</p>
+  <div id="feed"></div>
+</main>
+<script>
+  function addPhoto(index) {
+    const article = document.createElement('article');
+    article.innerHTML = `<h2>Photo ${index}</h2><div class="photo"><img src="./download-sample.svg?filename=feed-photo-${index}.svg" alt="Feed photo ${index}"></div><p>Hover, save, and continue scrolling.</p>`;
+    const photo = article.querySelector('.photo');
+    let layer = photo;
+    for (let depth = 0; depth < 10; depth++) {
+      const child = document.createElement('div'); child.className = 'layer'; layer.append(child); layer = child;
+    }
+    const cover = document.createElement('div'); cover.className = 'cover'; cover.innerHTML = `<span>Covered photo ${index}</span>`; layer.append(cover);
+    document.getElementById('feed').append(article);
+  }
+  addPhoto(1); addPhoto(2); setTimeout(() => { addPhoto(3); addPhoto(4); }, 1800);
+</script>
+</html>

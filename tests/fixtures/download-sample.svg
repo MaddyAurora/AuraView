@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
+  <defs><linearGradient id="sky" x2="1" y2="1"><stop stop-color="#164e63"/><stop offset="1" stop-color="#6d28d9"/></linearGradient></defs>
+  <rect width="640" height="360" fill="url(#sky)"/>
+  <circle cx="485" cy="90" r="42" fill="#fde68a"/>
+  <path d="M0 310 180 115 340 310 440 190 640 350V360H0" fill="#0f172a"/>
+  <text x="28" y="48" fill="#fff" font-family="sans-serif" font-size="24">AuraView image download test</text>
+  <text x="28" y="334" fill="#a5f3fc" font-family="sans-serif" font-size="18">Original SVG · 640 × 360</text>
+</svg>

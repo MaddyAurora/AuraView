@@ -117,7 +117,7 @@ export function useTabReorder(containerRef: RefObject<HTMLDivElement>, tabs: Tab
       settling.current = [];
       for (const animation of strip.getAnimations()) animation.finish();
       const cards = pageCards(strip);
-      // A new tab may still be growing into the strip when grabbed.
+      // Finish any size transition or entrance fade before capturing drag bounds.
       for (const card of cards) for (const animation of card.getAnimations()) animation.finish();
       const origin = strip.getBoundingClientRect().left;
       const items = new Map<string, TabDragItem>();

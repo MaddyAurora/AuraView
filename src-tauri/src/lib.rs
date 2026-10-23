@@ -10,6 +10,11 @@ mod shortcuts;
 mod fullscreen;
 mod tab_overflow;
 mod tab_context_menu;
+mod tab_audio;
+mod image_download;
+mod bookmark_menu;
+mod bookmark_editor;
+mod bookmark_folder;
 
 struct BrowserState {
     last_requested_url: String,
@@ -28,6 +33,7 @@ impl BrowserState {
 struct BrowserRegistry {
     states: HashMap<(String, &'static str), Arc<Mutex<BrowserState>>>,
     closed_views: HashSet<(String, &'static str)>,
+    active_tab_id: Option<String>,
 }
 
 static REGISTRY: OnceLock<Mutex<BrowserRegistry>> = OnceLock::new();
@@ -1011,19 +1017,29 @@ fn browser_layout(tab_id: &str, primary: BrowserBounds, secondary: Option<Browse
     Ok(views)
 }
 
+fn layout_focus_target(active_tab_id: Option<&str>, tab_id: &str, reversed: bool,
+    layout: &[(BrowserViewRef, BrowserBounds, &'static str)]) -> Option<BrowserViewRef> {
+    if active_tab_id == Some(tab_id) { return None; }
+    let first_slot = if reversed { "secondary" } else { "primary" };
+    layout.iter().find(|(_, _, slot)| *slot == first_slot).or_else(|| layout.first())
+        .map(|(view, _, _)| view.clone())
+}
+
 #[tauri::command]
 async fn configure_browser_views(app: AppHandle, primary: BrowserBounds, secondary: Option<BrowserBounds>,
     right_url: String, primary_url: String, tab_id: String, reversed: Option<bool>,
-    primary_view: Option<BrowserViewRef>, secondary_view: Option<BrowserViewRef>) -> Result<(), String> {
+    primary_view: Option<BrowserViewRef>, secondary_view: Option<BrowserViewRef>,
+    primary_muted: Option<bool>, secondary_muted: Option<bool>) -> Result<(), String> {
     let _layout = LAYOUT_LOCK.lock().unwrap();
     let layout = browser_layout(&tab_id, primary, secondary, reversed.unwrap_or(false), primary_view, secondary_view)?;
     let layout = fullscreen::resolve_layout(&app, layout)?;
     let keys = layout.iter().map(|(view, _, _)| view.key()).collect::<Result<HashSet<_>, _>>()?;
     let labels = keys.iter().map(|(owner, pane)| browser_label(owner, pane)).collect::<Result<HashSet<_>, _>>()?;
-    let states = {
+    let (states, focus_target) = {
         let registry = registry().lock().unwrap();
         if keys.iter().any(|key| registry.closed_views.contains(key)) { return Ok(()); }
-        registry.states.iter().map(|(key, value)| (key.clone(), value.clone())).collect::<Vec<_>>()
+        let focus_target = layout_focus_target(registry.active_tab_id.as_deref(), &tab_id, reversed.unwrap_or(false), &layout);
+        (registry.states.iter().map(|(key, value)| (key.clone(), value.clone())).collect::<Vec<_>>(), focus_target)
     };
     for ((owner, pane), state) in states {
         let mut state = state.lock().unwrap();
@@ -1042,16 +1058,27 @@ async fn configure_browser_views(app: AppHandle, primary: BrowserBounds, seconda
         let url = if slot == "primary" { &primary_url } else { &right_url };
         let label = browser_label(&owner, pane)?;
         browser_state(&owner, pane).lock().unwrap().visible = true;
-        if let Some(webview) = app.get_webview(&label) {
+        let webview = if let Some(webview) = app.get_webview(&label) {
             bounds.apply(&webview)?;
             webview.show().map_err(|error| error.to_string())?;
+            webview
         } else {
             let requested = Url::parse(url).map_err(|error| error.to_string())?;
             let initial_url = begin_navigation(&app, &owner, pane, &requested);
             let focused = slot == if reversed.unwrap_or(false) { "secondary" } else { "primary" };
-            create_browser_view(&app, &owner, pane, bounds, initial_url, focused)?;
-        }
+            create_browser_view(&app, &owner, pane, bounds, initial_url, focused)?
+        };
+        tab_audio::apply_muted(&webview, if slot == "primary" { primary_muted } else { secondary_muted }.unwrap_or(false))?;
     }
+    // show() does not give a reused WebView2 keyboard focus. Closing its former
+    // owner otherwise leaves accelerators stranded until the user clicks a page.
+    // Apply focus after the complete layout is ready, outside accelerator callbacks.
+    if let Some(view) = focus_target {
+        let (owner, pane) = view.key()?;
+        app.get_webview(&browser_label(&owner, pane)?).ok_or("Browser pane is not ready")?
+            .set_focus().map_err(|error| error.to_string())?;
+    }
+    registry().lock().unwrap().active_tab_id = Some(tab_id);
     Ok(())
 }
 
@@ -1152,8 +1179,10 @@ fn create_browser_view(app: &AppHandle, tab_id: &str, pane: &'static str, bounds
     let app_nav = app.clone();
     let app_load = app.clone();
     let app_title = app.clone();
+    let image_token = image_download::token();
     let builder = WebviewBuilder::new(label, WebviewUrl::External(initial_browser_url(&initial_url)))
         .focused(focused)
+        .initialization_script_for_all_frames(image_download::script(&image_token))
         .on_navigation(move |url| {
             if url.as_str() == "about:blank" { return true; }
             if url.as_str() == "https://auraview.invalid/retry-local-server" {
@@ -1236,6 +1265,7 @@ fn create_browser_view(app: &AppHandle, tab_id: &str, pane: &'static str, bounds
     let window = app.get_window("main").ok_or("Main window is not ready")?;
     let child = window.add_child(builder, LogicalPosition::new(bounds.x, bounds.y),
         LogicalSize::new(bounds.width, bounds.height)).map_err(|error| error.to_string())?;
+    image_download::install(app, &child, image_token).map_err(|error| error.to_string())?;
     install_location_events(app, &child, tab_id, pane).map_err(|error| error.to_string())?;
     fullscreen::install(app, &child, BrowserViewRef { tab_id: tab_id.to_string(), pane: pane.to_string() })
         .map_err(|error| error.to_string())?;
@@ -1264,9 +1294,17 @@ fn create_browser_view(app: &AppHandle, tab_id: &str, pane: &'static str, bounds
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .on_window_event(|window, event| {
+            // Owned folder popups dismiss when interaction returns to the
+            // browser window. Native context menus keep their popup owner.
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Focused(true) | tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_)) {
+                let _ = bookmark_folder::close(window.app_handle());
+            }
+        })
         .on_menu_event(|app, event| {
             tab_overflow::selected(app, event.id().as_ref());
             tab_context_menu::selected(app, event.id().as_ref());
+            bookmark_menu::selected(app, event.id().as_ref());
         })
         .setup(|app| {
             fullscreen::initialize(app.handle())?;
@@ -1282,7 +1320,10 @@ pub fn run() {
             navigate_browser_view, reload_browser_view, go_back_browser_view,
             go_forward_browser_view, configure_browser_views, resize_browser_views,
             get_split_drag_pointer, close_browser_views, shortcuts::browser_page_action, tab_overflow::show_tab_overflow,
-            tab_context_menu::show_tab_context_menu
+            tab_context_menu::show_tab_context_menu, bookmark_menu::show_bookmark_menu,
+            tab_audio::set_browser_muted,
+            bookmark_editor::show_bookmark_editor, bookmark_editor::get_bookmark_editor, bookmark_editor::close_bookmark_editor,
+            bookmark_folder::show_bookmark_folder, bookmark_folder::get_bookmark_folder, bookmark_folder::close_bookmark_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running AuraView application");
@@ -1376,6 +1417,44 @@ mod tests {
         assert!(!first.lock().unwrap().visible);
         assert_eq!(first.lock().unwrap().generation, 1);
         assert!(second.lock().unwrap().visible);
+    }
+
+    #[test]
+    fn successive_tab_closes_focus_each_reused_replacement_view() {
+        let bounds = BrowserBounds { x: 0.0, y: 80.0, width: 1280.0, height: 760.0 };
+        let mut registry = BrowserRegistry::default();
+        let ids = ["first", "second", "third", "fourth"];
+        for id in ids {
+            registry.states.insert((id.to_string(), "primary"), Arc::new(Mutex::new(BrowserState::new(id == "fourth"))));
+        }
+        registry.active_tab_id = Some("fourth".into());
+        for (closed, replacement) in [("fourth", "third"), ("third", "second"), ("second", "first")] {
+            retire_browser_views(&mut registry, &[(closed.to_string(), "primary")]);
+            let layout = browser_layout(replacement, bounds, None, false, None, None).unwrap();
+            assert!(registry.states.contains_key(&(replacement.to_string(), "primary")), "replacement already exists");
+            let target = layout_focus_target(registry.active_tab_id.as_deref(), replacement, false, &layout).unwrap();
+            assert_eq!(target.key().unwrap(), (replacement.to_string(), "primary"));
+            registry.active_tab_id = Some(replacement.into());
+            assert!(layout_focus_target(registry.active_tab_id.as_deref(), replacement, false, &layout).is_none(),
+                "reconfiguring the selected page must preserve input focus");
+        }
+    }
+
+    #[test]
+    fn tab_switch_focus_uses_the_first_visual_page_and_preserves_native_identities() {
+        let left = BrowserBounds { x: 0.0, y: 120.0, width: 400.0, height: 600.0 };
+        let right = BrowserBounds { x: 408.0, width: 600.0, ..left };
+        let primary = BrowserViewRef { tab_id: "original-left".into(), pane: "primary".into() };
+        let secondary = BrowserViewRef { tab_id: "original-right".into(), pane: "secondary".into() };
+        for reversed in [false, true] {
+            let layout = browser_layout("pair", left, Some(right), reversed, Some(primary.clone()), Some(secondary.clone())).unwrap();
+            let target = layout_focus_target(Some("other"), "pair", reversed, &layout).unwrap();
+            assert_eq!(target.key().unwrap(), if reversed { secondary.key().unwrap() } else { primary.key().unwrap() });
+            assert!(layout_focus_target(Some("pair"), "pair", reversed, &layout).is_none(),
+                "swapping or resizing split panes must not steal focus");
+        }
+        let fullscreen = vec![(secondary.clone(), left, "primary")];
+        assert_eq!(layout_focus_target(Some("other"), "pair", true, &fullscreen).unwrap().key().unwrap(), secondary.key().unwrap());
     }
 
     #[test]

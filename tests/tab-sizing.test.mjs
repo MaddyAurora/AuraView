@@ -9,6 +9,8 @@ test('tabs fit their measured title and controls, and the first linked page avoi
   assert.equal(naturalTabWidth(2000, false), MAX_TAB_WIDTH);
   assert.equal(naturalTabWidth(2000, true), MAX_TAB_WIDTH);
   assert.equal(naturalTabWidth(0, true), MIN_TAB_WIDTH);
+  assert.equal(naturalTabWidth(40, false, true), 132);
+  assert.equal(naturalTabWidth(40, true, true), 108);
 });
 
 test('a spacious bar keeps short titles compact and leaves unused space for dragging the window', () => {

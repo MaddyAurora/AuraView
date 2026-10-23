@@ -6,6 +6,7 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import ts from 'typescript';
 import { addTab, applyTabStatus, closeTab, closeTabPage, createTab, enableTabSplit, orderedTabPages, reopenTab, selectTab, separateTabSplit, swapTabPages, tabPageView, tabViews, toggleSessionSplit } from '../src/lib/tabState.ts';
+import * as tabMenu from '../src/lib/tabContextMenu.ts';
 
 function splitTab(id, rightUrl = 'https://www.youtube.com') {
   const tab = enableTabSplit(createTab(id), `${id}-right`);
@@ -224,6 +225,7 @@ test('the tab strip renders both real page titles as one linked split tab', () =
   const icons = new Proxy({}, { get: () => (props) => React.createElement('svg', props) });
   // Render the real tab strip while keeping icon loading independent of Vite.
   const requireComponent = (name) => name === 'lucide-react' ? icons
+    : name === '../lib/tabContextMenu' ? tabMenu
     : name === '../lib/tabState' ? { orderedTabPages }
     : name === '../hooks/useTabReorder' ? { useTabReorder: () => ({ draggedTabId: null, stripEvents: {}, onPointerDown() {} }) }
     : name === '../hooks/useTabSizing' ? { useTabSizing: () => ({ widths: {} }) }

@@ -107,6 +107,35 @@ export function closeTab(session: BrowserSession, id: string): BrowserSession {
     closedTabs: [...(session.closedTabs || []), { tab: session.tabs[index], index }].slice(-20) };
 }
 
+export function findTabPage(tabs: Tab[], pageId: string) {
+  for (const owner of tabs) {
+    const entry = orderedTabPages(owner).find(({ page }) => page.id === pageId);
+    if (entry) return { owner, ...entry };
+  }
+}
+
+export function tabsOnSide(tabs: Tab[], id: string, side: 'left' | 'right'): Tab[] {
+  const index = tabs.findIndex((tab) => tab.id === id);
+  return index < 0 ? [] : side === 'left' ? tabs.slice(0, index) : tabs.slice(index + 1);
+}
+
+export function closeTabsOnSide(session: BrowserSession, id: string, side: 'left' | 'right'): BrowserSession {
+  // Remove rightmost tabs first so LIFO reopening restores each original position.
+  const closing = tabsOnSide(session.tabs, id, side);
+  return closing.reverse().reduce((next, tab) => closeTab(next, tab.id), session);
+}
+
+export function duplicateTabPage(session: BrowserSession, pageId: string): BrowserSession {
+  const target = findTabPage(session.tabs, pageId);
+  if (!target) return session;
+  const { split, splitEnabled, splitReversed, splitRatio, view, ...page } = target.page;
+  const duplicate = { ...page, id: `tab-${crypto.randomUUID()}`, inputUrl: page.url,
+    isLoading: true, canGoBack: false, canGoForward: false };
+  const tabs = [...session.tabs];
+  tabs.splice(tabs.indexOf(target.owner) + 1, 0, duplicate);
+  return { ...session, tabs, activeTabId: duplicate.id };
+}
+
 export function closeTabPage(session: BrowserSession, id: string, pane: BrowserPane): BrowserSession {
   const index = session.tabs.findIndex((tab) => tab.id === id);
   const tab = session.tabs[index];

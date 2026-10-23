@@ -1,18 +1,21 @@
-import { useLayoutEffect, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import type { Tab } from '../types/browser';
 import { orderedTabPages } from '../lib/tabState';
 import { fitTabGroups, naturalTabWidth, TAB_DRAG_SPACE } from '../lib/tabSizing';
 
 interface TabSizes { widths: Record<string, number>; stripWidth?: number; visibleCount?: number }
+interface TabMeasurements { capacity?: number; titleWidths: Map<string, number> }
 
 export function useTabSizing(areaRef: RefObject<HTMLDivElement>, stripRef: RefObject<HTMLDivElement>,
   newTabRef: RefObject<HTMLButtonElement>, tabs: Tab[], frozen: boolean) {
-  const [sizes, setSizes] = useState<TabSizes>({ widths: {} });
+  const [measurements, setMeasurements] = useState<TabMeasurements>({ titleWidths: new Map() });
+  const sizes = useRef<TabSizes>({ widths: {} });
   const groups = tabs.map((tab) => {
     const ordered = orderedTabPages(tab);
     const visible = tab.splitEnabled ? ordered : ordered.slice(0, 1);
     return { id: tab.id, pages: visible.map(({ page }, index) => ({ id: page.id, title: page.title,
+      isMuted: Boolean(page.isMuted),
       linkedFirst: visible.length === 2 && index === 0 })) };
   });
   const signature = JSON.stringify(groups);
@@ -32,19 +35,19 @@ export function useTabSizing(areaRef: RefObject<HTMLDivElement>, stripRef: RefOb
         + (parseFloat(buttonStyle.marginRight) || 0);
       const capacity = Math.max(0, area.clientWidth - buttonWidth - TAB_DRAG_SPACE);
       if (context && titles[0]) context.font = getComputedStyle(titles[0]).font;
-      const titleWidths = new Map(titles.map((title) => [title.dataset.tabTitle!, title.getBoundingClientRect().width]));
-      const fitted = fitTabGroups(groups.map((group) => ({ id: group.id,
-        preferred: group.pages.map((page) => naturalTabWidth(titleWidths.get(page.id)
-          || context?.measureText(page.title).width || 100, page.linkedFirst)) })), capacity);
-      const pages = groups.slice(0, fitted.visibleCount).flatMap((group) => group.pages);
-      const widths = Object.fromEntries(pages.map((page, index) => [page.id, fitted.widths[index]]));
-      const { stripWidth, visibleCount } = fitted;
-      setSizes((previous) => {
-        const same = previous.stripWidth !== undefined && Math.abs(previous.stripWidth - stripWidth) < 0.1
-          && previous.visibleCount === visibleCount
-          && Object.keys(previous.widths).length === pages.length
-          && pages.every((page) => Math.abs((previous.widths[page.id] ?? -1) - widths[page.id]) < 0.1);
-        return same ? previous : { widths, stripWidth, visibleCount };
+      const renderedWidths = new Map(titles.map((title) => [title.dataset.tabTitle!, title.getBoundingClientRect().width]));
+      const measured = groups.flatMap((group) => group.pages.map((page) => ({ title: page.title,
+        width: renderedWidths.get(page.id) || context?.measureText(page.title).width || 100 })));
+      setMeasurements((previous) => {
+        const same = previous.capacity !== undefined && Math.abs(previous.capacity - capacity) < 0.1
+          && measured.every((page) => Math.abs((previous.titleWidths.get(page.title) ?? -1) - page.width) < 0.1);
+        if (same) return previous;
+        // Cache by title rather than native identity: reopening uses fresh IDs,
+        // but can immediately reuse the closed page's intrinsic text width.
+        const titleWidths = new Map(previous.titleWidths);
+        for (const page of measured) { titleWidths.delete(page.title); titleWidths.set(page.title, page.width); }
+        while (titleWidths.size > Math.max(256, measured.length)) titleWidths.delete(titleWidths.keys().next().value!);
+        return { capacity, titleWidths };
       });
     };
     const observer = new ResizeObserver(measure);
@@ -55,5 +58,15 @@ export function useTabSizing(areaRef: RefObject<HTMLDivElement>, stripRef: RefOb
     return () => { disposed = true; observer.disconnect(); };
   }, [signature, frozen]);
 
-  return sizes;
+  if (!frozen) {
+    // Fit the current list on its first render. A count saved for the previous
+    // list would hide existing trailing pages when a tab is inserted before them.
+    const fitted = fitTabGroups(groups.map((group) => ({ id: group.id,
+      preferred: group.pages.map((page) => naturalTabWidth(measurements.titleWidths.get(page.title) ?? 100,
+        page.linkedFirst, page.isMuted)) })), measurements.capacity ?? Infinity);
+    const pages = groups.slice(0, fitted.visibleCount).flatMap((group) => group.pages);
+    sizes.current = { widths: Object.fromEntries(pages.map((page, index) => [page.id, fitted.widths[index]])),
+      stripWidth: fitted.stripWidth, visibleCount: fitted.visibleCount };
+  }
+  return sizes.current;
 }

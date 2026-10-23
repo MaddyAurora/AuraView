@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import ts from 'typescript';
 import * as sizing from '../src/lib/tabSizing.ts';
 import * as tabState from '../src/lib/tabState.ts';
+import * as tabMenu from '../src/lib/tabContextMenu.ts';
 
 function load(path, mocks) {
   const url = new URL(path, import.meta.url);
@@ -56,6 +57,7 @@ test('the tab strip hides both linked cards together and displays the exact extr
     'lucide-react': icons, '../lib/tabState': tabState, '../lib/tabSizing': sizing,
   }).TabOverflow;
   const TabBar = load('../src/components/TabBar.tsx', {
+    '../lib/tabContextMenu': tabMenu,
     'lucide-react': icons, '../lib/tabState': tabState, './TabOverflow': { TabOverflow },
     './TabContextMenu': { TabContextMenu: () => null },
     '../hooks/useTabReorder': { useTabReorder: () => ({ draggedTabId: null, stripEvents: {}, onPointerDown() {} }) },
@@ -85,6 +87,7 @@ test('right-click targets the exact background split page, even if detached befo
     useEffect(fn) { const index = cursor++; if (!slots[index]) { slots[index] = true; cleanups.push(fn()); } },
   };
   const TabBar = load('../src/components/TabBar.tsx', {
+    '../lib/tabContextMenu': tabMenu,
     react: hooks, 'lucide-react': icons, '../lib/tabState': tabState,
     './TabOverflow': { TabOverflow: () => null }, './TabContextMenu': { TabContextMenu: () => null },
     '../hooks/useTabReorder': { useTabReorder: () => ({ draggedTabId: null, stripEvents: {}, onPointerDown() {} }) },
@@ -95,6 +98,10 @@ test('right-click targets the exact background split page, even if detached befo
   let pair = tabState.swapTabPages(tabState.enableTabSplit(tabState.createTab('pair'), 'right'));
   const foreground = tabState.createTab('foreground');
   const props = { tabs: [pair, foreground], activeTabId: foreground.id, onSelectTab: (id) => selected.push(id),
+    canReopenTab: false, onTabMenuAction(action, pageId) {
+      const target = tabState.findTabPage(props.tabs, pageId);
+      if (action === 'close' && target) closed.push([target.owner.id, target.pane]);
+    },
     onCloseTab() {}, onCloseTabPage: (...args) => closed.push(args), onNewTab() {}, onSwapTabPages() {}, onMoveTab() {} };
   const pages = (node, found = new Map()) => {
     if (!React.isValidElement(node)) return found;
@@ -109,20 +116,21 @@ test('right-click targets the exact background split page, even if detached befo
     await new Promise((resolve) => setImmediate(resolve));
     calls.length = 0;
     cards.get('right').onContextMenu(event);
-    assert.deepEqual(calls, [{ command: 'show_tab_context_menu', args: { pageId: 'right', x: 210, y: 22, canClose: true } }]);
+    assert.deepEqual(calls, [{ command: 'show_tab_context_menu', args: { pageId: 'right', x: 210, y: 22, canClose: true,
+      canCloseLeft: false, canCloseRight: true, canReopen: false, isMuted: false } }]);
     assert.deepEqual(selected, []);
     assert.deepEqual(closed, []);
-    events.get('tab-context-close-page')({ payload: 'right' });
+    events.get('tab-context-action')({ payload: { action: 'close', pageId: 'right' } });
     assert.deepEqual(closed.pop(), ['pair', 'secondary']);
     cards.get('pair').onContextMenu(event);
-    events.get('tab-context-close-page')({ payload: 'pair' });
+    events.get('tab-context-action')({ payload: { action: 'close', pageId: 'pair' } });
     assert.deepEqual(closed.pop(), ['pair', 'primary']);
     // Native menu events are delivered asynchronously, after popup dismissal.
     props.tabs = tabState.separateTabSplit({ tabs: props.tabs, activeTabId: props.activeTabId }, pair.id).tabs;
     render();
-    events.get('tab-context-close-page')({ payload: 'right' });
+    events.get('tab-context-action')({ payload: { action: 'close', pageId: 'right' } });
     assert.deepEqual(closed.pop(), ['right', 'primary']);
-    events.get('tab-context-close-page')({ payload: 'already-closed' });
+    events.get('tab-context-action')({ payload: { action: 'close', pageId: 'already-closed' } });
     assert.deepEqual(closed, []);
     props.tabs = [foreground]; cards = render(); calls.length = 0;
     cards.get(foreground.id).onContextMenu(event);
@@ -145,15 +153,21 @@ test('preview context menu closes the chosen page and stays within the window', 
   const closed = [], dismissed = [];
   try {
     const TabContextMenu = load('../src/components/TabContextMenu.tsx', {
+      '../lib/tabContextMenu': tabMenu,
       react: { ...React, useEffect() {}, useRef: (value) => ({ current: value }) },
       'react-dom': { createPortal: (node) => node },
     }).TabContextMenu;
-    const menu = TabContextMenu({ target: { pageId: 'clicked', x: 799, y: 599, canClose: true },
-      onClosePage: (id) => closed.push(id), onDismiss: () => dismissed.push(true) });
-    assert.deepEqual(menu.props.style, { left: 640, top: 556 });
-    assert.equal(menu.props.children.props.children, 'Close page');
-    menu.props.children.props.onClick();
-    assert.deepEqual(closed, ['clicked']);
+    const menu = TabContextMenu({ target: { pageId: 'clicked', x: 799, y: 599, canClose: true,
+      canCloseLeft: false, canCloseRight: true, canReopen: false, isMuted: true },
+      onAction: (action, id) => closed.push([action, id]), onDismiss: () => dismissed.push(true) });
+    assert.deepEqual(menu.props.style, { left: 576, top: 314, maxWidth: '100vw', maxHeight: '100vh' });
+    const buttons = menu.props.children.map((group) => group.props.children[1]);
+    assert.deepEqual(buttons.map((button) => button.props.children), [
+      'Refresh', 'Duplicate tab', 'Unmute tab', 'Close page', 'Close tabs to the right', 'Close tabs to the left', 'Reopen closed tab',
+    ]);
+    assert.deepEqual(buttons.map((button) => button.props.disabled), [false, false, false, false, false, true, true]);
+    buttons[3].props.onClick();
+    assert.deepEqual(closed, [['close', 'clicked']]);
     assert.deepEqual(dismissed, [true]);
   } finally {
     if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow;

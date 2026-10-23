@@ -88,6 +88,7 @@ pub fn install(app: &AppHandle, webview: &tauri::Webview, view: Option<BrowserVi
             }
             if let Some(view) = view {
                 let handler = FocusChangedEventHandler::create(Box::new(move |_, _| {
+                    let _ = super::bookmark_folder::close(&app);
                     let _ = app.emit_to("main", "browser-focus", view.clone());
                     Ok(())
                 }));

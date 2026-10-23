@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserPane, Tab } from '../types/browser';
-import { Plus, X, Server, Globe, Loader2, Minus, Square, Copy, Terminal, Link2, ArrowLeftRight } from 'lucide-react';
+import { Plus, X, Server, Globe, Loader2, Minus, Square, Copy, Terminal, Link2, ArrowLeftRight, VolumeX } from 'lucide-react';
 import { orderedTabPages } from '../lib/tabState';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -8,7 +8,8 @@ import { listen } from '@tauri-apps/api/event';
 import { useTabReorder } from '../hooks/useTabReorder';
 import { useTabSizing } from '../hooks/useTabSizing';
 import { TabOverflow } from './TabOverflow';
-import { TabContextMenu, TabMenuTarget } from './TabContextMenu';
+import { TabContextMenu } from './TabContextMenu';
+import { TabMenuAction, TabMenuTarget } from '../lib/tabContextMenu';
 
 interface TabBarProps {
   tabs: Tab[];
@@ -19,6 +20,8 @@ interface TabBarProps {
   onNewTab: () => void;
   onSwapTabPages: (id: string) => void;
   onMoveTab: (id: string, toIndex: number) => void;
+  canReopenTab: boolean;
+  onTabMenuAction: (action: TabMenuAction, pageId: string) => void;
 }
 
 export const TabBar: React.FC<TabBarProps> = ({
@@ -30,6 +33,8 @@ export const TabBar: React.FC<TabBarProps> = ({
   onNewTab,
   onSwapTabPages,
   onMoveTab,
+  canReopenTab,
+  onTabMenuAction,
 }) => {
   const [isMaximized, setIsMaximized] = useState(false);
   const [contextMenu, setContextMenu] = useState<TabMenuTarget | null>(null);
@@ -40,22 +45,16 @@ export const TabBar: React.FC<TabBarProps> = ({
   const tabSizes = useTabSizing(tabAreaRef, stripRef, newTabRef, tabs, Boolean(tabDrag.draggedTabId));
   const visibleCount = tabSizes.visibleCount ?? tabs.length;
   const hiddenTabs = tabs.slice(visibleCount);
-  const pageActions = useRef({ tabs, onCloseTabPage });
-  pageActions.current = { tabs, onCloseTabPage };
-  const closePage = (pageId: string) => {
-    // Resolve the current owner because a page can move out of a split while
-    // the native popup is open. Its stable page ID still selects the right one.
-    for (const owner of pageActions.current.tabs) {
-      const entry = orderedTabPages(owner).find(({ page }) => page.id === pageId);
-      if (entry) { pageActions.current.onCloseTabPage(owner.id, entry.pane); break; }
-    }
-  };
+  const pageActions = useRef(onTabMenuAction);
+  pageActions.current = onTabMenuAction;
 
   useEffect(() => {
     if (!('__TAURI_INTERNALS__' in window)) return;
     let disposed = false;
     let stop: (() => void) | undefined;
-    listen<string>('tab-context-close-page', (event) => closePage(event.payload))
+    listen<{ action: TabMenuAction; pageId: string }>('tab-context-action', (event) => {
+      pageActions.current(event.payload.action, event.payload.pageId);
+    })
       .then((unlisten) => { if (disposed) unlisten(); else stop = unlisten; }).catch(console.error);
     return () => { disposed = true; stop?.(); };
   }, []);
@@ -230,7 +229,9 @@ export const TabBar: React.FC<TabBarProps> = ({
               onContextMenu={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
-                const target = { pageId: page.id, x: event.clientX, y: event.clientY, canClose: linked || tabs.length > 1 };
+                const target = { pageId: page.id, x: event.clientX, y: event.clientY, canClose: linked || tabs.length > 1,
+                  canCloseLeft: tabIndex > 0, canCloseRight: tabIndex < tabs.length - 1,
+                  canReopen: canReopenTab, isMuted: Boolean(page.isMuted) };
                 if ('__TAURI_INTERNALS__' in window) invoke('show_tab_context_menu', target).catch(console.error);
                 else setContextMenu(target);
               }}
@@ -270,6 +271,8 @@ export const TabBar: React.FC<TabBarProps> = ({
                   {page.title || (isLocalhost ? 'Local AI Server' : 'New Tab')}
                 </span>
               </span>
+
+              {page.isMuted && <VolumeX aria-label="Tab muted" className="w-3 h-3 shrink-0 text-amber-400" />}
 
                 <button type="button" onClick={(event) => { event.stopPropagation(); onSwapTabPages(tab.id); }}
                   onMouseDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}
@@ -380,7 +383,7 @@ export const TabBar: React.FC<TabBarProps> = ({
         </button>
       </div>
       {contextMenu && <TabContextMenu target={contextMenu} onDismiss={() => setContextMenu(null)}
-        onClosePage={closePage} />}
+        onAction={onTabMenuAction} />}
     </div>
   );
 };

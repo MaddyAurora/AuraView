@@ -60,6 +60,8 @@ async function harness() {
     calls, Element,
     get session() { return slots[0]; },
     get tabBar() { return tree.props.children[0].props; },
+    get bookmarks() { return tree.props.children[2].props; },
+    get webviews() { return tree.props.children[4].props; },
     setSession(session) { slots[0] = session; dirty = true; },
     flush() {
       do {
@@ -152,6 +154,33 @@ test('shortcuts preserve input/control spaces, composed text, handled events and
   } finally { h.dispose(); }
 });
 
+test('bookmarks use the focused split page, ignore stale focus, and block browser shortcuts while editing', async () => {
+  const h = await harness();
+  try {
+    const pair = tabState.enableTabSplit(tabState.createTab('pair', 'https://example.com/left'), 'right');
+    pair.split = { ...pair.split, title: 'Right page', url: 'https://example.org/right' };
+    h.setSession({ tabs: [pair], activeTabId: 'pair' }); h.flush();
+    h.event('browser-focus', tabState.tabPageView(pair, 'secondary'));
+    assert.equal(h.bookmarks.getCurrentPage().title, 'Right page');
+    h.bookmarks.onOpen('https://example.org/saved'); h.flush();
+    assert.deepEqual(h.calls.at(-1).args, { ...tabState.tabPageView(pair, 'secondary'), url: 'https://example.org/saved' });
+    h.bookmarks.onDialogChange(true); h.flush();
+    assert.equal('overlayOpen' in h.webviews, false);
+    const callCount = h.calls.length;
+    h.key('t', { ctrlKey: true });
+    h.event('browser-shortcut', { action: 'close-tab' });
+    h.event('browser-shortcut', { action: 'split' });
+    assert.equal(h.session.tabs.length, 1);
+    assert.equal(h.session.tabs[0].splitEnabled, true);
+    assert.equal(h.calls.length, callCount);
+    h.bookmarks.onDialogChange(false); h.flush();
+    assert.equal('overlayOpen' in h.webviews, false);
+    h.bookmarks.onOpen('https://example.net/new', true); h.flush();
+    assert.equal(h.session.tabs.length, 2);
+    assert.equal(h.bookmarks.getCurrentPage().url, 'https://example.net/new');
+  } finally { h.dispose(); }
+});
+
 test('closing a split page from the tab bar retires only its native view', async () => {
   const h = await harness();
   try {
@@ -189,4 +218,78 @@ test('reopening restores split URLs, order and ratio with fresh identities and b
   assert.equal(session.closedTabs.length, 20);
   assert.equal(tabState.reopenTab(session).closedTabs.length, 19);
   assert.equal(tabState.reopenTab({ tabs: [other], activeTabId: 'other' }).tabs[0], other);
+});
+
+test('tab menu refresh, mute and duplicate target a background split page without changing its partner', async () => {
+  const h = await harness();
+  try {
+    const pair = tabState.swapTabPages(tabState.enableTabSplit(tabState.createTab('pair'), 'right'));
+    pair.split = { ...pair.split, url: 'https://example.com/video', title: 'Video', canGoBack: true };
+    const other = tabState.createTab('other');
+    h.setSession({ tabs: [pair, other], activeTabId: 'other' }); h.flush();
+    const view = tabState.tabPageView(pair, 'secondary');
+    h.tabBar.onTabMenuAction('refresh', 'right'); h.flush();
+    assert.deepEqual(h.calls.at(-1), { command: 'reload_browser_view', args: view });
+    assert.equal(h.session.activeTabId, 'other');
+    h.tabBar.onTabMenuAction('mute', 'right'); h.flush();
+    assert.deepEqual(h.calls.at(-1), { command: 'set_browser_muted', args: { ...view, muted: true } });
+    assert.equal(h.session.tabs[0].split.isMuted, true);
+    assert.equal(h.session.tabs[0].isMuted, undefined);
+    h.tabBar.onTabMenuAction('duplicate', 'right'); h.flush();
+    const duplicate = h.session.tabs[1];
+    assert.equal(duplicate.url, pair.split.url);
+    assert.equal(duplicate.title, 'Video');
+    assert.equal(duplicate.isMuted, true);
+    assert.equal(duplicate.inputUrl, duplicate.url);
+    assert.equal(duplicate.canGoBack, false);
+    assert.equal(duplicate.split, undefined);
+    assert.equal(duplicate.view, undefined);
+    assert.notEqual(duplicate.id, 'right');
+    assert.equal(h.session.activeTabId, duplicate.id);
+    assert.equal(h.session.tabs[0].splitReversed, true);
+    assert.equal(h.session.tabs[0].split.canGoBack, true);
+    h.tabBar.onTabMenuAction('mute', 'right'); h.flush();
+    assert.equal(h.session.tabs[0].split.isMuted, false);
+    assert.equal(h.session.tabs[1].isMuted, true);
+    const callCount = h.calls.length;
+    h.tabBar.onTabMenuAction('refresh', 'already-closed'); h.flush();
+    assert.equal(h.calls.length, callCount);
+    h.setSession(tabState.separateTabSplit(h.session, 'pair')); h.flush();
+    h.tabBar.onTabMenuAction('refresh', 'right'); h.flush();
+    assert.deepEqual(h.calls.at(-1), { command: 'reload_browser_view', args: view });
+  } finally { h.dispose(); }
+});
+
+test('directional tab closing keeps the clicked split group, retires every removed view, and reopens in order', async () => {
+  const h = await harness();
+  try {
+    for (const side of ['left', 'right']) {
+      const tabs = [tabState.createTab('left'), tabState.enableTabSplit(tabState.createTab('pair'), 'right-page'),
+        tabState.enableTabSplit(tabState.createTab('other-pair'), 'other-right'), tabState.createTab('last')];
+      const closing = side === 'left' ? tabs.slice(0, 1) : tabs.slice(2);
+      h.setSession({ tabs, activeTabId: side === 'left' ? 'left' : 'last' }); h.flush();
+      h.calls.length = 0;
+      h.tabBar.onTabMenuAction(`close-${side}`, 'right-page'); h.flush();
+      assert.deepEqual(h.calls, [{ command: 'close_browser_views', args: { views: closing.flatMap(tabState.tabViews) } }]);
+      assert.ok(h.session.tabs.includes(tabs[1]));
+      assert.ok(h.session.tabs.some((tab) => tab.id === h.session.activeTabId));
+      assert.equal(h.tabBar.canReopenTab, true);
+      for (const closed of closing) {
+        h.tabBar.onTabMenuAction('reopen', 'right-page'); h.flush();
+        const restored = h.session.tabs.find((tab) => tab.id === h.session.activeTabId);
+        assert.equal(restored.url, closed.url);
+        assert.equal(restored.splitEnabled, closed.splitEnabled);
+        assert.notEqual(restored.id, closed.id);
+      }
+      assert.deepEqual(h.session.tabs.map((tab) => Boolean(tab.splitEnabled)), [false, true, true, false]);
+      assert.equal(h.tabBar.canReopenTab, false);
+    }
+    const last = tabState.createTab('single');
+    h.setSession({ tabs: [last], activeTabId: last.id }); h.flush(); h.calls.length = 0;
+    for (const action of ['close-left', 'close-right', 'close', 'reopen']) {
+      h.tabBar.onTabMenuAction(action, last.id); h.flush();
+      assert.equal(h.session.tabs[0], last);
+    }
+    assert.deepEqual(h.calls, []);
+  } finally { h.dispose(); }
 });

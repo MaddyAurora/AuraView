@@ -30,9 +30,9 @@ export function fitTabGroups(groups: { id: string; preferred: number[] }[], avai
     stripWidth: widths.reduce((sum, width) => sum + width, gaps) };
 }
 
-export function naturalTabWidth(titleWidth: number, linkedFirst: boolean): number {
+export function naturalTabWidth(titleWidth: number, linkedFirst: boolean, muted = false): number {
   // Padding, borders, favicon, gaps, and (except before a chain) the close button.
-  const chrome = linkedFirst ? 48 : 72;
+  const chrome = (linkedFirst ? 48 : 72) + (muted ? 20 : 0);
   return Math.max(MIN_TAB_WIDTH, Math.min(MAX_TAB_WIDTH, Math.ceil(Math.max(0, titleWidth)) + chrome));
 }
 

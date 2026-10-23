@@ -14,6 +14,7 @@ export interface Tab {
   isLoading: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
+  isMuted?: boolean;
   isAiServer?: boolean;
   splitEnabled?: boolean;
   splitReversed?: boolean;
