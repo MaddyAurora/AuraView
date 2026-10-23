@@ -1,6 +1,6 @@
 # 🌌 AuraView
 
-> **A lightweight, high-performance custom browser designed specifically for local AI applications, power workflows, and media playback.**
+> **A lightweight, high-performance custom browser designed for entertainment, AI applications, power workflows, and media playback.**
 
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2.2-blue?logo=tauri)](https://v2.tauri.app/)
 [![React](https://img.shields.io/badge/React-18-61dafb?logo=react)](https://react.dev/)
@@ -29,53 +29,14 @@ Modern browsers like Chrome and Edge frequently consume **1 GB to 3+ GB of RAM**
   - **Pinokio** (`:42000`)
   - Quick custom port launcher (`:8000`, `:5000`, etc.)
 - 🪟 **Side-by-Side Split View:** Compare pages side-by-side (`Ctrl + \`).
-- **Tab overflow:** Tabs shrink to fit, then complete extra tabs move into a numbered dropdown.
-  Hover or click the count to select a hidden tab; linked split tabs stay together.
-- **Middle-click tabs:** Click the mouse wheel on a tab to close it. In a split, only the clicked page
-  closes; the other page becomes a normal tab and keeps its history and playback.
-- **Tab context menu:** Right-click a tab to **Refresh**, **Duplicate tab**, **Mute tab** / **Unmute tab**,
-  **Close page**, **Close tabs to the right**, **Close tabs to the left**, or **Reopen closed tab**.
-  Refresh, duplicate, mute, and Close page target the clicked page, including a background or split page.
-  Duplicates open beside the original group with fresh navigation history. Closing tabs to either side
-  keeps the clicked split pair together; closed groups can be reopened with their layout and mute state.
-- **Hover image downloads (desktop):** Hover a loaded image to reveal a small download button in its
+- **Image downloader:** Hover over a loaded image to reveal a small download button in its
   bottom-right corner. Click to save the original image to the Windows Downloads folder. Existing
   filenames receive a numbered suffix. The button shows a check mark when saved or a retry hint on
   failure. Works with linked, responsive, generated blob/data images, single CSS backgrounds, and
-  embedded frames, including split tabs. Images loaded later while scrolling can also be saved through
-  the browser's session when their cached data is unavailable. Transparent gallery covers and images
-  with mouse events disabled are supported; carousels target the visible slide. Very small images without room for a button are skipped.
-  To check the feature in desktop dev, open `http://localhost:1420/tests/fixtures/image-download.html`.
-  Scrolling and lazy-feed checks are at `http://localhost:1420/tests/fixtures/image-download-feed.html`.
-- **Video downloads (Windows desktop):** Hover a loaded video to reveal a download button in its
-  top-right corner. Paused videos, transparent player covers, embedded frames, split panes, and player
-  fullscreen are supported. Click to download; click again during a download to cancel. The toolbar's
-  Downloads button shows progress, completion, errors, and retry/cancel actions after scrolling or
-  navigating away. Files go to Windows Downloads with numbered names rather than overwriting.
-  Direct files and complete video blobs use the browser session. YouTube, Instagram, and other
-  supported streaming sites use the bundled yt-dlp engine, Deno, and FFmpeg to resolve the best available
-  quality and combine audio where provided. MP4 is preferred when available at that quality; other
-  source codecs may produce WebM/MKV without transcoding. Ambiguous feeds ask you to open the individual
-  video instead of downloading another post. DRM media and live-stream recording are not supported.
-  Some sites require an active login or may need an engine update when their players change.
-  Desktop checks: `http://localhost:1420/tests/fixtures/video-download.html`.
-  X/Twitter timeline cards also resolve their own status links. When webpage extraction fails,
-  a fallback can use an observed HLS/DASH playlist or video/audio requests attributable to the
-  selected MediaSource player. Advertisements use their own playing stream rather than a YouTube
-  watch URL. Unidentifiable or ambiguous streams remain unavailable; complete fallback files are
-  checked against the player's duration before saving. Stream checks:
-  `http://localhost:1420/tests/fixtures/video-stream-fallback.html`.
+  embedded frames, including split tabs.
+- **Video downloader:** Hover overa loaded video to reveal a download button in its
+  top-right corner. Paused videos, transparent player covers, embedded frames, split panes, and player fullscreen are supported. Click to download; click again during a download to cancel.
 - **Bookmarks:** Click the bookmark icon to the left of **AI Dock** to toggle the bookmarks bar.
-  Right-click the bar and choose **Add current page…**, or click its **+** button. Edit the prefilled
-  title and link, then choose **Root**, **Create folder…**, or an existing folder. Root bookmarks
-  appear directly on the bar; folders open a menu of their saved pages. Bookmarks and folders are
-  saved locally across restarts. In split view, bookmarking uses the last focused visible page.
-  Right-click a bookmark to edit, delete, or open it in a new tab; Ctrl-click or middle-click also
-  opens a bar bookmark in a new tab. Folder menus show saved pages and **Add current page…**;
-  right-click a page inside the folder for **Edit** or **Delete**. Drag bookmarks and folders to
-  reorder the bar, and drag pages within a folder to reorder them. The order is saved locally.
-  The desktop bookmark editor opens in a small owned window, leaving the browser page visible
-  behind it without dimming or replacing the page.
 - 🧠 **Smart Address Bar:** Intelligently identifies raw ports (`8188`), `localhost`, web URLs (`youtube.com`), or web search queries.
 - 🎬 **Hardware Video Playback:** Full support for HTML5 video, VP9, AV1, and YouTube media streaming.
 - ⌨️ **Productivity Hotkeys:**
