@@ -1212,19 +1212,10 @@ fn create_browser_view(app: &AppHandle, tab_id: &str, pane: &'static str, bounds
             let _ = app_nav.emit("webview-status", navigation_status(&nav_tab, pane, url.as_str(), true));
             true
         })
-        .background_color(tauri::webview::Color(9, 12, 16, 255))
+        // Use the browser's normal white canvas for pages without a background.
+        // Website styles must control their own light/dark appearance.
+        .background_color(tauri::webview::Color(255, 255, 255, 255))
                 .initialization_script(r#"
-                    const setDark = () => {
-                        if (document.documentElement) {
-                            document.documentElement.style.backgroundColor = '#090c10';
-                        }
-                        if (document.body) {
-                            document.body.style.backgroundColor = '#090c10';
-                        }
-                    };
-                    setDark();
-                    window.addEventListener('DOMContentLoaded', setDark);
-
                     const hideEdgeError = () => {
                         const t = (document.title || '').toLowerCase();
                         const isEdgeTitle = t === "can't reach this page"
@@ -1290,7 +1281,7 @@ fn create_browser_view(app: &AppHandle, tab_id: &str, pane: &'static str, bounds
             use webview2_com_sys::Microsoft::Web::WebView2::Win32::*;
             use windows_core::Interface;
             if let Ok(controller) = platform.controller().cast::<ICoreWebView2Controller2>() {
-                let _ = controller.SetDefaultBackgroundColor(COREWEBVIEW2_COLOR { A: 255, R: 9, G: 12, B: 16 });
+                let _ = controller.SetDefaultBackgroundColor(COREWEBVIEW2_COLOR { A: 255, R: 255, G: 255, B: 255 });
             }
             if let Ok(core) = platform.controller().CoreWebView2() {
                 if let Ok(settings) = core.Settings() { let _ = settings.SetIsBuiltInErrorPageEnabled(false); }
