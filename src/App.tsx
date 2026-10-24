@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { BrowserPane, BrowserViewRef } from './types/browser';
 import { shortcutAction, ShortcutAction, spaceUsesControl } from './lib/shortcuts';
 import { BrowserStatus } from './lib/browserStatus';
+import { loadToolbarVisibility, saveToolbarVisibility, TOOLBAR_VISIBILITY_KEY, ToolbarVisibility } from './lib/toolbarVisibility';
 import { addTab, applyTabStatus, BrowserSession, closeTab, closeTabPage, closeTabsOnSide, createTab, duplicateTabPage, findTabPage, moveTab, orderedTabPages, reopenTab, resizeTabSplit, selectTab, switchTab, swapTabPages, tabPageView, tabsOnSide, tabViews, toggleSessionSplit } from './lib/tabState';
 import { TabMenuAction } from './lib/tabContextMenu';
 import { TabBar } from './components/TabBar';
@@ -9,7 +10,8 @@ import { NavigationBar } from './components/NavigationBar';
 import { LocalhostDock } from './components/LocalhostDock';
 import { BookmarksBar } from './components/BookmarksBar';
 import { WebviewContainer } from './components/WebviewContainer';
-import { VideoDownloads, useVideoDownloads, downloadBusy } from './components/VideoDownloads';
+import { Downloads, useDownloads, useDownloadIndicator } from './components/Downloads';
+import { DownloadsPreview } from './components/DownloadsPreview';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
@@ -17,17 +19,49 @@ const INITIAL_TAB = { ...createTab('tab-1'), isLoading: false };
 
 export function App() {
   const [session, setSession] = useState<BrowserSession>({ tabs: [INITIAL_TAB], activeTabId: INITIAL_TAB.id });
-  const [showAiDock, setShowAiDock] = useState(false);
-  const [showBookmarks, setShowBookmarks] = useState(false);
+  const [toolbarVisibility, setToolbarVisibility] = useState(() => loadToolbarVisibility(window.localStorage));
+  const { showAiDock, showBookmarks } = toolbarVisibility;
+  const toolbarVisibilityRef = useRef(toolbarVisibility);
+  toolbarVisibilityRef.current = toolbarVisibility;
   const [showDownloads, setShowDownloads] = useState(false);
-  const videoDownloads = useVideoDownloads();
-  const [bookmarkDialogOpen, setBookmarkDialogOpen] = useState(false);
+  const [hoverDownloads, setHoverDownloads] = useState(false);
+  const downloadsAnchor = useRef<HTMLDivElement>(null);
+  const downloads = useDownloads();
+  const downloadIndicator = useDownloadIndicator(downloads);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [settingsError, setSettingsError] = useState('');
   const { tabs, activeTabId } = session;
   const activeTab = tabs.find((tab) => tab.id === activeTabId) || tabs[0];
   const { pane: firstPane, page: firstPage } = orderedTabPages(activeTab)[0];
   const isSplitActive = Boolean(activeTab.splitEnabled && activeTab.split);
   const isTauri = '__TAURI_INTERNALS__' in window;
   const focusedView = useRef<BrowserViewRef | undefined>();
+
+  const toggleToolbar = useCallback((key: keyof ToolbarVisibility) => {
+    const current = toolbarVisibilityRef.current;
+    const next = { ...current, [key]: !current[key] };
+    try { saveToolbarVisibility(window.localStorage, next); }
+    catch { setSettingsError('Unable to save toolbar visibility. Please try again.'); return; }
+    toolbarVisibilityRef.current = next;
+    setToolbarVisibility(next);
+  }, []);
+
+  useEffect(() => {
+    const restore = (event: StorageEvent) => {
+      if (event.key && event.key !== TOOLBAR_VISIBILITY_KEY) return;
+      const next = loadToolbarVisibility(window.localStorage);
+      toolbarVisibilityRef.current = next;
+      setToolbarVisibility(next);
+    };
+    window.addEventListener('storage', restore);
+    return () => window.removeEventListener('storage', restore);
+  }, []);
+
+  useEffect(() => {
+    const leave = () => setHoverDownloads(false);
+    window.addEventListener('blur', leave);
+    return () => window.removeEventListener('blur', leave);
+  }, []);
 
   const updateStatus = useCallback((status: BrowserStatus) => {
     setSession((previous) => ({ ...previous, tabs: applyTabStatus(previous.tabs, status) }));
@@ -45,6 +79,18 @@ export function App() {
     const tab = createTab(`tab-${crypto.randomUUID()}`, url);
     setSession((previous) => addTab(previous, tab));
   }, []);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    let disposed = false;
+    const stops: (() => void)[] = [];
+    const retain = (stop: () => void) => { if (disposed) stop(); else stops.push(stop); };
+    listen<string>('history-open-url', (event) => handleNewTab(event.payload)).then(retain).catch(console.error);
+    listen('browser-history-cleared', () => setSession((previous) => ({ ...previous, closedTabs: [] }))).then(retain).catch(console.error);
+    listen<string>('browser-history-error', (event) => setSettingsError(event.payload)).then(retain).catch(console.error);
+    void invoke('browser_settings_ready').catch((error) => { if (!disposed) setSettingsError(String(error)); });
+    return () => { disposed = true; stops.forEach((stop) => stop()); };
+  }, [isTauri, handleNewTab]);
 
   const handleCloseTab = useCallback((id: string, event?: React.MouseEvent) => {
     event?.stopPropagation();
@@ -164,7 +210,7 @@ export function App() {
   }, [isTauri, updateStatus]);
 
   const runShortcut = useCallback((action: ShortcutAction, source?: BrowserViewRef) => {
-    if (bookmarkDialogOpen) return;
+    if (editorOpen) return;
     if (action === 'new-tab') { handleNewTab(); return; }
     if (action === 'close-tab') { handleCloseTab(activeTabId); return; }
     if (action === 'reopen-tab') { setSession(reopenTab); return; }
@@ -180,7 +226,7 @@ export function App() {
       return;
     }
     if (action === 'split') { handleToggleSplit(); return; }
-    if (action === 'ai-dock') { setShowAiDock((previous) => !previous); return; }
+    if (action === 'ai-dock') { toggleToolbar('showAiDock'); return; }
     const visibleViews = isSplitActive ? tabViews(activeTab) : [tabPageView(activeTab, firstPane)];
     const candidate = source || focusedView.current;
     const view = visibleViews.find((item) => item.tabId === candidate?.tabId && item.pane === candidate.pane)
@@ -194,12 +240,12 @@ export function App() {
     } else {
       invoke('browser_page_action', { ...view, action }).catch(console.error);
     }
-  }, [activeTab, activeTabId, firstPane, isSplitActive, isTauri, bookmarkDialogOpen, handleNewTab, handleCloseTab, handleToggleSplit, updateStatus]);
+  }, [activeTab, activeTabId, firstPane, isSplitActive, isTauri, editorOpen, handleNewTab, handleCloseTab, handleToggleSplit, updateStatus, toggleToolbar]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing) return;
-      if (bookmarkDialogOpen) return;
+      if (editorOpen) return;
       const action = shortcutAction(event);
       if (!action || ((action === 'scroll-up' || action === 'scroll-down') && spaceUsesControl(event.target))) return;
       event.preventDefault();
@@ -207,7 +253,7 @@ export function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [runShortcut, bookmarkDialogOpen]);
+  }, [runShortcut, editorOpen]);
 
   const shortcutHandler = useRef(runShortcut);
   shortcutHandler.current = runShortcut;
@@ -233,6 +279,7 @@ export function App() {
         onCloseTab={handleCloseTab} onCloseTabPage={handleCloseTabPage} onNewTab={() => handleNewTab()} onSwapTabPages={handleSwapTabPages}
         onMoveTab={handleMoveTab} canReopenTab={Boolean(session.closedTabs?.length)} onTabMenuAction={handleTabMenuAction} />
       <NavigationBar key={`${activeTabId}:${firstPane}`} url={firstPage.url} isLoading={firstPage.isLoading}
+        downloadsAnchor={downloadsAnchor}
         canGoBack={firstPage.canGoBack} canGoForward={firstPage.canGoForward}
         isSplitActive={isSplitActive} showAiDock={showAiDock} showBookmarks={showBookmarks}
         onNavigate={(url) => handlePaneNavigate(firstPane, url)}
@@ -240,15 +287,19 @@ export function App() {
         onGoForward={() => { void handlePaneAction(firstPane, 'forward'); }}
         onReload={() => { void handlePaneAction(firstPane, 'reload'); }}
         onGoHome={() => handlePaneNavigate(firstPane, 'https://www.google.com')}
-        onToggleSplit={handleToggleSplit} onToggleAiDock={() => setShowAiDock((previous) => !previous)}
-        onToggleBookmarks={() => setShowBookmarks((previous) => !previous)}
-        showDownloads={showDownloads} downloadCount={videoDownloads.filter((item) => downloadBusy(item.status)).length}
-        onToggleDownloads={() => setShowDownloads((previous) => !previous)} />
-      {showDownloads && <VideoDownloads downloads={videoDownloads} onClose={() => setShowDownloads(false)} />}
+        onToggleSplit={handleToggleSplit} onToggleAiDock={() => toggleToolbar('showAiDock')}
+        onToggleBookmarks={() => toggleToolbar('showBookmarks')}
+        showDownloads={showDownloads || hoverDownloads} downloadsPinned={showDownloads}
+        downloadCount={downloadIndicator.count} downloadPercent={downloadIndicator.percent} downloadComplete={downloadIndicator.complete}
+        onHoverDownloads={setHoverDownloads}
+        onToggleDownloads={() => { setShowDownloads((previous) => !previous); setHoverDownloads(false); }} />
+      {showDownloads && <Downloads downloads={downloads} onClose={() => { setShowDownloads(false); setHoverDownloads(false); }} />}
+      {settingsError && <div role="alert" className="flex items-center justify-between gap-4 bg-red-950/70 px-4 py-2 text-xs text-red-200"><span>{settingsError}</span><button onClick={() => setSettingsError('')} className="underline shrink-0">Dismiss</button></div>}
+      <DownloadsPreview visible={hoverDownloads && !showDownloads} anchor={downloadsAnchor} downloads={downloads} />
       <BookmarksBar visible={showBookmarks} getCurrentPage={() => bookmarkPage().page}
         onOpen={(url, newTab) => { if (newTab) handleNewTab(url); else handlePaneNavigate(bookmarkPage().pane, url); }}
-        onDialogChange={setBookmarkDialogOpen} />
-      {showAiDock && <LocalhostDock onOpenServer={handleOpenServer} />}
+        onDialogChange={setEditorOpen} />
+      {showAiDock && <LocalhostDock onOpenServer={handleOpenServer} onDialogChange={setEditorOpen} />}
       <WebviewContainer activeTab={activeTab} splitTab={activeTab.split || INITIAL_TAB}
         onSplitResize={handleSplitResize}
         isSplitActive={isSplitActive} showAiDock={showAiDock} onNavigate={handlePaneNavigate}

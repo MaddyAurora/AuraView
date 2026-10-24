@@ -90,7 +90,7 @@ function dragHarness(axis = 'x') {
   render();
   return { moves, ref,
     get current() { return current; },
-    down(id, position = 50) { current.onPointerDown(event(position), id); render(); },
+    down(id, position = 50, extra = {}) { current.onPointerDown(event(position, extra), id); render(); },
     move(position) { current.events.onPointerMove(event(position)); render(); },
     up(position) { current.events.onPointerUp(event(position)); render(); },
     click() { const e = event(0); current.events.onClickCapture(e); return e; },
@@ -115,6 +115,20 @@ test('clicks and small movements keep navigation intact; dragging reorders once 
     assert.deepEqual(h.moves, [['a', 2]]);
     assert.equal(h.click().defaultPrevented, true);
     assert.equal(h.click().defaultPrevented, undefined);
+  } finally { h.dispose(); }
+});
+
+test('nested action buttons stay clickable and do not initiate a drag of their parent item', () => {
+  const h = dragHarness(), actionButton = {}, item = {};
+  try {
+    h.down('a'); h.move(280); h.cancel();
+    h.down('a', 50, { target: { closest: () => actionButton }, currentTarget: item });
+    h.move(280); h.up(280);
+    assert.deepEqual(h.moves, []);
+    assert.equal(h.click().defaultPrevented, undefined);
+    h.down('a', 50, { target: { closest: () => item }, currentTarget: item });
+    h.move(280); h.up(280);
+    assert.deepEqual(h.moves, [['a', 2]], 'a bookmark button itself remains a valid drag target');
   } finally { h.dispose(); }
 });
 

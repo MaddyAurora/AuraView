@@ -1,0 +1,2 @@
+AuraView browser file download check.
+This file should appear alongside image and video downloads in the Downloads panel.

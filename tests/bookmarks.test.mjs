@@ -6,6 +6,7 @@ import React from 'react';
 import ts from 'typescript';
 import * as bookmarks from '../src/lib/bookmarks.ts';
 import { BOOKMARKS_KEY, bookmarkUrl, loadBookmarks, putBookmark, saveBookmarks } from '../src/lib/bookmarks.ts';
+import * as bookmarkTransfer from '../src/lib/bookmarkTransfer.ts';
 
 const empty = () => ({ bookmarks: [], folders: [] });
 
@@ -32,7 +33,7 @@ function componentHarness(path, overrides = {}) {
   const module = { exports: {} };
   const require = createRequire(url);
   const mocks = { react: hooks, 'lucide-react': new Proxy({}, { get: () => () => null }),
-    '../lib/bookmarks': bookmarks, './BookmarkDialog': { BookmarkDialog() {} }, './BookmarkMenu': { BookmarkMenu() {} },
+    '../lib/bookmarks': bookmarks, '../lib/bookmarkTransfer': bookmarkTransfer, './BookmarkDialog': { BookmarkDialog() {} }, './BookmarkMenu': { BookmarkMenu() {} },
     './BookmarkFolderMenu': { BookmarkFolderMenu() {} },
     '../hooks/useBookmarkReorder': { useBookmarkReorder: (_ref, ids) => ({ order: ids, events: {}, onPointerDown() {} }) }, ...overrides };
   new Function('require', 'module', 'exports', code)((name) => mocks[name] ?? require(name), module, module.exports);
@@ -214,7 +215,7 @@ test('folder contents contain only saved pages and Add, with right-click actions
   const harness = componentHarness('../src/components/BookmarkFolderContents.tsx');
   const actions = [], contexts = [];
   const tree = harness.render({ data, folderId: 'folder', onAction: (action) => actions.push(action), onContext: (...args) => contexts.push(args), onMove() {} });
-  const rows = tree.props.children[0].props.children[0];
+  const rows = tree.props.children[0].props.children[1];
   assert.equal(rows.length, 2);
   assert.deepEqual(rows.map((row) => row.props.children[1].props.children), ['One', 'Two']);
   assert.equal(tree.props.children[1].props.role, 'menuitem');
@@ -260,4 +261,230 @@ test('desktop folder popup reorders and refreshes its bookmarks, with Edit and D
     harness.dispose();
     assert.equal(events.size, 0);
   } finally { globalThis.window = original; }
+});
+
+test('the toolbar import/export menu merges the latest collection, ignores duplicate clicks and uses native pickers', async () => {
+  const original = globalThis.window, calls = [], events = new Map(), broadcasts = [], dialogs = [];
+  let current = putBookmark(empty(), { title: 'Existing', url: 'https://existing.example/', folderId: null });
+  let stored = JSON.stringify(current), finishImport;
+  globalThis.window = { __TAURI_INTERNALS__: {}, localStorage: { getItem: () => stored, setItem: (_key, value) => { stored = value; } } };
+  const harness = componentHarness('../src/components/BookmarksBar.tsx', {
+    '@tauri-apps/api/core': { invoke: async (command, args) => {
+      calls.push({ command, args });
+      if (command === 'import_bookmarks_html') return new Promise((resolve) => { finishImport = resolve; });
+      if (command === 'export_bookmarks_html') return true;
+    } },
+    '@tauri-apps/api/event': {
+      emit: async (...args) => broadcasts.push(args),
+      listen: async (name, callback) => { events.set(name, callback); return () => events.delete(name); },
+    },
+  });
+  const props = { visible: true, getCurrentPage() {}, onOpen() {}, onDialogChange: (open) => dialogs.push(open) };
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  try {
+    let tree = harness.render(props);
+    tree.props.children[0].props.onContextMenu({ preventDefault() {}, clientX: 12, clientY: 34 });
+    assert.deepEqual(calls.at(-1).args.items.map((item) => item.id), ['add', 'import', 'export']);
+    events.get('bookmark-menu-select')({ payload: 'import' });
+    events.get('bookmark-menu-select')({ payload: 'import' });
+    await settle();
+    assert.equal(calls.filter((call) => call.command === 'import_bookmarks_html').length, 1);
+    current = putBookmark(current, { title: 'Added during picker', url: 'https://later.example/', folderId: null });
+    stored = JSON.stringify(current);
+    finishImport('<DL><DT><H3 PERSONAL_TOOLBAR_FOLDER="true">Favorites bar</H3><DL><DT><H3>Imported</H3><DL><DT><A HREF="https://imported.example/">Imported page</A></DL></DL></DL>');
+    await settle();
+    tree = harness.render(props);
+    const data = JSON.parse(stored);
+    assert.deepEqual(data.bookmarks.map((bookmark) => bookmark.title), ['Existing', 'Added during picker', 'Imported page']);
+    assert.equal(broadcasts.at(-1)[0], 'bookmarks-changed');
+    assert.deepEqual(dialogs, [true, false]);
+    assert.match(tree.props.children[0].props.children[0].props.children.at(-1).props.children, /Imported 1 bookmark and 1 folder/);
+    events.get('bookmark-menu-select')({ payload: 'export' });
+    await settle();
+    assert.equal(calls.at(-1).command, 'export_bookmarks_html');
+    assert.equal(calls.at(-1).args.html, bookmarkTransfer.exportBookmarkHtml(data));
+    assert.equal(stored, JSON.stringify(data), 'export does not edit bookmarks');
+    tree = harness.render(props);
+    assert.equal(tree.props.children[0].props.children[0].props.children.at(-1).props.children, 'Bookmarks exported.');
+    harness.dispose();
+  } finally { globalThis.window = original; }
+});
+
+test('cancelled, invalid and unsavable imports leave existing bookmarks intact and release the dialog state', async () => {
+  const original = globalThis.window;
+  const data = putBookmark(empty(), { title: 'Keep', url: 'https://keep.example/', folderId: null });
+  const props = { visible: true, getCurrentPage() {}, onOpen() {}, onDialogChange() {} };
+  try {
+    for (const scenario of ['cancel', 'invalid', 'storage']) {
+      const stored = JSON.stringify(data), events = new Map(), dialogs = [];
+      globalThis.window = { __TAURI_INTERNALS__: {}, localStorage: { getItem: () => stored, setItem() { throw new Error('Quota'); } } };
+      const harness = componentHarness('../src/components/BookmarksBar.tsx', {
+        '@tauri-apps/api/core': { invoke: async () => scenario === 'cancel' ? null : scenario === 'invalid' ? 'Not bookmark HTML' : '<DL><DT><A HREF="https://imported.example/">New</A></DL>' },
+        '@tauri-apps/api/event': { listen: async (name, callback) => { events.set(name, callback); return () => {}; } },
+      });
+      harness.render({ ...props, onDialogChange: (open) => dialogs.push(open) });
+      events.get('bookmark-menu-select')({ payload: 'import' });
+      await new Promise((resolve) => setImmediate(resolve));
+      const tree = harness.render(props), strip = tree.props.children[0].props.children[0];
+      assert.deepEqual(dialogs, [true, false]);
+      assert.equal(strip.props.children[0][0].props.title, 'Keep\nhttps://keep.example/');
+      if (scenario === 'cancel') assert.equal(strip.props.children[2], '');
+      else assert.match(strip.props.children[2].props.children, scenario === 'storage' ? /Unable to save/ : /bookmarks HTML file/);
+      assert.equal(stored, JSON.stringify(data));
+      harness.dispose();
+    }
+  } finally { globalThis.window = original; }
+});
+
+test('nested folder navigation targets its own bookmarks, Add action and drag order', () => {
+  const { data } = bookmarkTransfer.importBookmarkHtml('<DL><DT><H3>Root folder</H3><DL><DT><H3>Child</H3><DL><DT><A HREF="https://child.example/">Child page</A></DL></DL></DL>', empty());
+  const root = data.folders[0], child = data.folders[1], actions = [], moves = [];
+  const harness = componentHarness('../src/components/BookmarkFolderContents.tsx', {
+    '../hooks/useBookmarkReorder': { useBookmarkReorder: (_ref, ids, _axis, move) => { moves.push(move); return { order: ids, events: {}, onPointerDown() {} }; } },
+  });
+  const props = { data, folderId: root.id, onAction: (action) => actions.push(action), onContext() {}, onMove: (...args) => actions.push(args) };
+  try {
+    let tree = harness.render(props);
+    tree.props.children[0].props.children[1][0].props.onClick();
+    tree = harness.render(props);
+    assert.equal(tree.props['aria-label'], 'Root folder / Child');
+    tree.props.children[0].props.children[1][0].props.onClick({});
+    tree.props.children[1].props.onClick();
+    moves.at(-1)(data.bookmarks[0].id, 0);
+    assert.deepEqual(actions, [`open:${data.bookmarks[0].id}`, `add:${child.id}`, [data.bookmarks[0].id, 0, child.id]]);
+    tree.props.children[0].props.children[0].props.onClick();
+    tree = harness.render(props);
+    assert.equal(tree.props['aria-label'], 'Root folder');
+    assert.equal(bookmarks.bookmarkBarItems(data).length, 1, 'nested folders do not leak onto the bar');
+  } finally { harness.dispose(); }
+});
+
+test('toolbar folder clicks carry their opener bounds and folder context menus delete the selected subtree', async () => {
+  const original = globalThis.window, calls = [], events = new Map(), broadcasts = [];
+  const { data } = bookmarkTransfer.importBookmarkHtml('<DL><DT><H3>Remove</H3><DL><DT><H3>Child</H3><DL><DT><A HREF="https://remove.example/">Remove me</A></DL></DL><DT><H3>Keep</H3><DL></DL></DL>', empty());
+  const root = data.folders[0], keep = data.folders[2];
+  let stored = JSON.stringify(data);
+  globalThis.window = { __TAURI_INTERNALS__: {}, localStorage: { getItem: () => stored, setItem: (_key, value) => { stored = value; } } };
+  const harness = componentHarness('../src/components/BookmarksBar.tsx', {
+    '@tauri-apps/api/core': { invoke: async (command, args) => calls.push({ command, args }) },
+    '@tauri-apps/api/event': { emit: async (...args) => broadcasts.push(args), listen: async (name, fn) => { events.set(name, fn); return () => events.delete(name); } },
+  });
+  const props = { visible: true, getCurrentPage() {}, onOpen() {}, onDialogChange() {} };
+  try {
+    let tree = harness.render(props);
+    const folder = tree.props.children[0].props.children[0].props.children[0][0];
+    const click = { currentTarget: { getBoundingClientRect: () => ({ left: 20, top: 60, bottom: 88, width: 100, height: 28 }) } };
+    folder.props.onClick(click);
+    assert.deepEqual(calls.at(-1), { command: 'show_bookmark_folder', args: { folderId: root.id, x: 20, y: 91, height: 400, anchor: { x: 20, y: 60, width: 100, height: 28 } } });
+    let stopped = false;
+    folder.props.onContextMenu({ preventDefault() {}, stopPropagation() { stopped = true; }, clientX: 30, clientY: 70 });
+    assert.equal(stopped, true);
+    assert.ok(calls.at(-1).args.items.some((item) => item.id === `delete-folder:${root.id}`));
+    events.get('bookmark-menu-select')({ payload: `delete-folder:${root.id}` });
+    tree = harness.render(props);
+    assert.deepEqual(JSON.parse(stored).folders.map((folder) => folder.id), [keep.id]);
+    assert.equal(JSON.parse(stored).bookmarks.length, 0);
+    assert.equal(calls.at(-1).command, 'close_bookmark_folder');
+    assert.equal(broadcasts.at(-1)[0], 'bookmarks-changed');
+    assert.equal(tree.props.children[0].props.children[0].props.children[0].length, 1);
+  } finally { harness.dispose(); globalThis.window = original; }
+});
+
+test('folder deletion does not apply or close the popup if saving fails', () => {
+  const original = globalThis.window, calls = [], events = new Map();
+  const data = { folders: [{ id: 'keep', name: 'Keep' }], bookmarks: [] };
+  globalThis.window = { __TAURI_INTERNALS__: {}, localStorage: { getItem: () => JSON.stringify(data), setItem() { throw new Error('Quota'); } } };
+  const harness = componentHarness('../src/components/BookmarksBar.tsx', {
+    '@tauri-apps/api/core': { invoke: async (command) => calls.push(command) },
+    '@tauri-apps/api/event': { listen: async (name, fn) => { events.set(name, fn); return () => {}; } },
+  });
+  const props = { visible: true, getCurrentPage() {}, onOpen() {}, onDialogChange() {} };
+  try {
+    harness.render(props);
+    events.get('bookmark-menu-select')({ payload: 'delete-folder:keep' });
+    const strip = harness.render(props).props.children[0].props.children[0];
+    assert.equal(strip.props.children[0][0].props.title, 'Keep');
+    assert.match(strip.props.children[2].props.children, /Unable to save bookmarks/);
+    assert.deepEqual(calls, []);
+  } finally { harness.dispose(); globalThis.window = original; }
+});
+
+test('preview folder pointerdown and click close the opener without reopening it; other clicks dismiss normally', () => {
+  const original = { window: globalThis.window, document: globalThis.document, Element: globalThis.Element };
+  const listeners = new Map();
+  const data = { folders: [{ id: 'one', name: 'One' }, { id: 'two', name: 'Two' }], bookmarks: [] };
+  globalThis.window = { localStorage: { getItem: () => JSON.stringify(data) }, innerHeight: 800, innerWidth: 1000, addEventListener() {}, removeEventListener() {} };
+  globalThis.document = { body: {}, addEventListener: (name, fn) => listeners.set(name, fn), removeEventListener: (name) => listeners.delete(name) };
+  globalThis.Element = class { constructor(id) { this.id = id; } closest() { return this; } getAttribute() { return this.id; } };
+  const bar = componentHarness('../src/components/BookmarksBar.tsx');
+  const popup = componentHarness('../src/components/BookmarkFolderMenu.tsx', { 'react-dom': { createPortal: (node) => node }, './BookmarkFolderContents': { BookmarkFolderContents() {} } });
+  const props = { visible: true, getCurrentPage() {}, onOpen() {}, onDialogChange() {} };
+  const click = { currentTarget: { getBoundingClientRect: () => ({ left: 20, top: 60, bottom: 88, width: 100, height: 28 }) } };
+  try {
+    let tree = bar.render(props);
+    tree.props.children[0].props.children[0].props.children[0][0].props.onClick(click);
+    tree = bar.render(props);
+    popup.render(tree.props.children[3].props);
+    listeners.get('pointerdown')({ button: 0, target: new Element('one') });
+    tree = bar.render(props);
+    tree.props.children[0].props.children[0].props.children[0][0].props.onClick(click);
+    tree = bar.render(props);
+    assert.equal(tree.props.children[3], null);
+    tree.props.children[0].props.children[0].props.children[0][1].props.onClick(click);
+    tree = bar.render(props);
+    assert.equal(tree.props.children[3].props.folderId, 'two');
+    popup.render(tree.props.children[3].props);
+    listeners.get('pointerdown')({ button: 0, target: new Element('outside') });
+    assert.equal(bar.render(props).props.children[3], null);
+  } finally { popup.dispose(); bar.dispose(); Object.assign(globalThis, original); }
+});
+
+test('nested folders expose a folder-specific delete menu in the native popup', async () => {
+  const original = globalThis.window, calls = [];
+  const data = { folders: [{ id: 'root', name: 'Root' }, { id: 'child', name: 'Child', parentId: 'root' }], bookmarks: [] };
+  globalThis.window = { localStorage: { getItem: () => JSON.stringify(data) } };
+  const harness = componentHarness('../src/components/BookmarkFolderWindow.tsx', {
+    './BookmarkFolderContents': { BookmarkFolderContents() {} },
+    '@tauri-apps/api/core': { invoke: async (command, args) => { calls.push({ command, args }); if (command === 'get_bookmark_folder') return 'root'; } },
+    '@tauri-apps/api/event': { listen: async () => () => {} },
+  });
+  try {
+    harness.render(); await new Promise((resolve) => setImmediate(resolve));
+    const contents = harness.render().props.children[0].props.children.props;
+    contents.onFolderContext('child', 12, 34);
+    assert.deepEqual(calls.at(-1), { command: 'show_bookmark_menu', args: { x: 12, y: 34, items: [
+      { id: 'add:child', label: 'Add current page…' }, { id: 'delete-folder:child', label: 'Delete folder' },
+    ] } });
+  } finally { harness.dispose(); globalThis.window = original; }
+});
+
+test('green bookmark notices expire after five seconds and repeated messages restart the countdown', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const original = globalThis.window, events = new Map();
+  let stored = JSON.stringify({ folders: [{ id: 'one', name: 'One' }, { id: 'two', name: 'Two' }], bookmarks: [] });
+  globalThis.window = { __TAURI_INTERNALS__: {}, localStorage: { getItem: () => stored, setItem: (_key, value) => { stored = value; } } };
+  const harness = componentHarness('../src/components/BookmarksBar.tsx', {
+    '@tauri-apps/api/core': { invoke: async () => true },
+    '@tauri-apps/api/event': { emit: async () => {}, listen: async (name, fn) => { events.set(name, fn); return () => events.delete(name); } },
+  });
+  const props = { visible: true, getCurrentPage() {}, onOpen() {}, onDialogChange() {} };
+  const notice = () => harness.render(props).props.children[0].props.children[0].props.children.at(-1);
+  try {
+    harness.render(props);
+    events.get('bookmark-menu-select')({ payload: 'delete-folder:one' });
+    assert.equal(notice().props.children, 'Folder and its contents deleted.');
+    t.mock.timers.tick(3000);
+    events.get('bookmark-menu-select')({ payload: 'delete-folder:two' });
+    t.mock.timers.tick(2000);
+    assert.equal(notice().props.children, 'Folder and its contents deleted.', 'the old timeout cannot dismiss a new identical message');
+    t.mock.timers.tick(2999);
+    assert.equal(notice().props.role, 'status');
+    t.mock.timers.tick(1);
+    assert.equal(notice(), '');
+    events.get('bookmark-menu-select')({ payload: 'export' });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(notice().props.children, 'Bookmarks exported.');
+    t.mock.timers.tick(5000);
+    assert.equal(notice(), '');
+  } finally { harness.dispose(); globalThis.window = original; }
 });

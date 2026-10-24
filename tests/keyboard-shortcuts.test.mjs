@@ -5,9 +5,10 @@ import React from 'react';
 import ts from 'typescript';
 import * as tabState from '../src/lib/tabState.ts';
 import * as shortcuts from '../src/lib/shortcuts.ts';
+import * as toolbarVisibility from '../src/lib/toolbarVisibility.ts';
 
 // Run App's real handlers and effects with native invocations/events stubbed.
-async function harness() {
+async function harness(storage = new Map(), failSave = false) {
   const originals = { window: globalThis.window, HTMLElement: globalThis.HTMLElement };
   const listeners = new Map();
   const native = new Map();
@@ -17,13 +18,14 @@ async function harness() {
   class Element { constructor(control = false) { this.control = control; } closest() { return this.control; } }
   globalThis.HTMLElement = Element;
   globalThis.window = { __TAURI_INTERNALS__: {},
+    localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => { if (failSave) throw new Error('Storage unavailable'); storage.set(key, value); } },
     addEventListener(name, fn) { listeners.set(name, fn); },
     removeEventListener(name, fn) { if (listeners.get(name) === fn) listeners.delete(name); } };
   const hooks = {
     ...React, default: React,
     useState(initial) {
       const index = cursor++;
-      if (!(index in slots)) slots[index] = initial;
+      if (!(index in slots)) slots[index] = typeof initial === 'function' ? initial() : initial;
       return [slots[index], (next) => { slots[index] = typeof next === 'function' ? next(slots[index]) : next; dirty = true; }];
     },
     useRef(initial) { const index = cursor++; return slots[index] ||= { current: initial }; },
@@ -49,11 +51,15 @@ async function harness() {
     if (name === 'react') return hooks;
     if (name === './lib/tabState') return tabState;
     if (name === './lib/shortcuts') return shortcuts;
+    if (name === './lib/toolbarVisibility') return toolbarVisibility;
     if (name === '@tauri-apps/api/core') return { invoke: async (command, args) => { calls.push({ command, args }); } };
     if (name === '@tauri-apps/api/event') return { listen: async (name, fn) => {
       native.set(name, fn); return () => { if (native.get(name) === fn) native.delete(name); };
     } };
-    if (name === './components/VideoDownloads') return { VideoDownloads: () => null, useVideoDownloads: () => [], downloadBusy: () => false };
+    if (name === './components/Downloads') {
+      const component = () => null; components.set('Downloads', component);
+      return { Downloads: component, useDownloads: () => [], useDownloadIndicator: () => ({ count: 0, percent: null, complete: false }) };
+    }
     if (name.startsWith('./components/')) {
       const key = name.split('/').pop(), component = () => null;
       components.set(key, component); return { [key]: component };
@@ -65,7 +71,11 @@ async function harness() {
     calls, Element,
     get session() { return slots[0]; },
     get tabBar() { return tree.props.children[0].props; },
+    get navigation() { return tree.props.children.find((child) => child?.type === components.get('NavigationBar')).props; },
+    get downloadsPanel() { return tree.props.children.find((child) => child?.type === components.get('Downloads'))?.props; },
+    get downloadsPreview() { return tree.props.children.find((child) => child?.type === components.get('DownloadsPreview'))?.props; },
     get bookmarks() { return tree.props.children.find((child) => child?.type === components.get('BookmarksBar')).props; },
+    get aiDock() { return tree.props.children.find((child) => child?.type === components.get('LocalhostDock'))?.props; },
     get webviews() { return tree.props.children.find((child) => child?.type === components.get('WebviewContainer')).props; },
     setSession(session) { slots[0] = session; dirty = true; },
     flush() {
@@ -80,6 +90,8 @@ async function harness() {
       listeners.get('keydown')(event); h.flush(); return event;
     },
     event(name, payload) { native.get(name)?.({ payload }); h.flush(); },
+    blur() { listeners.get('blur')?.(); h.flush(); },
+    storageEvent(key = null) { listeners.get('storage')?.({ key }); h.flush(); },
     dispose() {
       slots.forEach((slot) => slot?.cleanup?.());
       assert.equal(native.size, 0);
@@ -93,6 +105,49 @@ async function harness() {
   await new Promise((resolve) => setImmediate(resolve));
   return h;
 }
+
+test('bookmarks and AI Dock independently restore shown and hidden states after app restart, including keyboard changes', async () => {
+  const storage = new Map();
+  let h = await harness(storage);
+  try {
+    assert.equal(h.navigation.showBookmarks, false); assert.equal(h.navigation.showAiDock, false);
+    h.navigation.onToggleBookmarks(); h.navigation.onToggleAiDock(); h.flush();
+    h.dispose(); h = await harness(storage);
+    assert.equal(h.navigation.showBookmarks, true); assert.equal(h.navigation.showAiDock, true);
+    assert.equal(h.bookmarks.visible, true); assert.ok(h.aiDock);
+    h.key('d', { ctrlKey: true });
+    h.dispose(); h = await harness(storage);
+    assert.equal(h.navigation.showBookmarks, true); assert.equal(h.navigation.showAiDock, false);
+    h.navigation.onToggleBookmarks(); h.flush();
+    h.dispose(); h = await harness(storage);
+    assert.equal(h.navigation.showBookmarks, false); assert.equal(h.navigation.showAiDock, false);
+    h.navigation.onToggleAiDock(); h.flush();
+    h.dispose(); h = await harness(storage);
+    assert.equal(h.navigation.showBookmarks, false); assert.equal(h.navigation.showAiDock, true);
+  } finally { h.dispose(); }
+});
+
+test('restoring app preferences refreshes visibility while unrelated website storage events leave it alone', async () => {
+  const storage = new Map();
+  const h = await harness(storage);
+  try {
+    storage.set(toolbarVisibility.TOOLBAR_VISIBILITY_KEY, JSON.stringify({ showAiDock: true, showBookmarks: true }));
+    h.storageEvent('unrelated-website-key');
+    assert.equal(h.navigation.showBookmarks, false); assert.equal(h.navigation.showAiDock, false);
+    h.storageEvent();
+    assert.equal(h.navigation.showBookmarks, true); assert.equal(h.navigation.showAiDock, true);
+  } finally { h.dispose(); }
+});
+
+test('failed visibility saves preserve the current layout and a malformed preference does not prevent startup', async () => {
+  const storage = new Map([[toolbarVisibility.TOOLBAR_VISIBILITY_KEY, '{invalid']]);
+  const h = await harness(storage, true);
+  try {
+    h.navigation.onToggleBookmarks(); h.navigation.onToggleAiDock(); h.flush();
+    assert.equal(h.navigation.showBookmarks, false); assert.equal(h.navigation.showAiDock, false);
+    assert.equal(storage.get(toolbarVisibility.TOOLBAR_VISIBILITY_KEY), '{invalid');
+  } finally { h.dispose(); }
+});
 
 test('keyboard tab actions cycle, select numbers, close, and reopen in the real App', async () => {
   const h = await harness();
@@ -112,6 +167,44 @@ test('keyboard tab actions cycle, select numbers, close, and reopen in the real 
     assert.equal(h.session.tabs.length, 10);
     assert.notEqual(h.session.activeTabId, ids[9]);
     assert.equal(h.session.closedTabs.length, 0);
+  } finally { h.dispose(); }
+});
+
+test('download history previews on hover, closes on leave, and stays open only when pinned', async () => {
+  const h = await harness();
+  try {
+    assert.equal(h.downloadsPanel, undefined);
+    h.navigation.onHoverDownloads(true); h.flush();
+    assert.equal(h.downloadsPanel, undefined, 'hovering never inserts a panel into the browser layout');
+    assert.equal(h.downloadsPreview.visible, true); assert.equal(h.navigation.downloadsPinned, false);
+    h.navigation.onHoverDownloads(false); h.flush(); assert.equal(h.downloadsPreview.visible, false);
+    h.navigation.onHoverDownloads(true); h.flush();
+    h.navigation.onToggleDownloads(); h.flush();
+    h.navigation.onHoverDownloads(false); h.flush();
+    assert.ok(h.downloadsPanel); assert.equal(h.navigation.downloadsPinned, true);
+    assert.equal(h.downloadsPreview.visible, false, 'pinning replaces the overlay with the resizing panel');
+    h.blur(); assert.ok(h.downloadsPanel, 'a pinned panel survives window blur');
+    h.navigation.onToggleDownloads(); h.flush(); assert.equal(h.downloadsPanel, undefined);
+    h.navigation.onHoverDownloads(true); h.flush();
+    h.blur(); assert.equal(h.downloadsPreview.visible, false, 'hover previews clear when the app loses focus');
+    h.navigation.onToggleDownloads(); h.flush();
+    h.downloadsPanel.onClose(); h.flush(); assert.equal(h.downloadsPanel, undefined);
+  } finally { h.dispose(); }
+});
+
+test('AI Dock editors block browser shortcuts until their native window closes', async () => {
+  const h = await harness();
+  try {
+    h.navigation.onToggleAiDock(); h.flush();
+    assert.ok(h.aiDock);
+    const count = h.session.tabs.length;
+    h.aiDock.onDialogChange(true); h.flush();
+    h.key('t', { ctrlKey: true });
+    h.event('browser-shortcut', { action: 'new-tab' });
+    assert.equal(h.session.tabs.length, count);
+    h.aiDock.onDialogChange(false); h.flush();
+    h.key('t', { ctrlKey: true });
+    assert.equal(h.session.tabs.length, count + 1);
   } finally { h.dispose(); }
 });
 
@@ -148,6 +241,8 @@ test('page shortcuts target the focused split pane from the UI and native event 
 test('shortcuts preserve input/control spaces, composed text, handled events and unrelated modifiers', async () => {
   const h = await harness();
   try {
+    assert.equal(h.calls.at(-1).command, 'browser_settings_ready');
+    h.calls.length = 0;
     for (const mods of [{ target: new h.Element(true) }, { isComposing: true }, { defaultPrevented: true }]) {
       h.key(' ', mods); assert.equal(h.calls.length, 0);
     }
@@ -156,6 +251,21 @@ test('shortcuts preserve input/control spaces, composed text, handled events and
     assert.equal(h.session.tabs.length, 1);
     h.key('8', { ctrlKey: true }); assert.equal(h.session.activeTabId, 'tab-1');
     h.key('F4', { ctrlKey: true }); assert.equal(h.session.tabs.length, 1);
+  } finally { h.dispose(); }
+});
+
+test('History opens the selected saved URL in a new tab and clearing it forgets closed tabs only', async () => {
+  const h = await harness();
+  try {
+    const initial = h.session.tabs[0];
+    h.event('history-open-url', 'https://example.com/from-history'); h.flush();
+    assert.equal(h.session.tabs.length, 2);
+    assert.equal(h.session.tabs.find((tab) => tab.id === h.session.activeTabId).url, 'https://example.com/from-history');
+    h.tabBar.onCloseTab(initial.id); h.flush();
+    assert.equal(h.session.closedTabs.length, 1);
+    h.event('browser-history-cleared'); h.flush();
+    assert.deepEqual(h.session.closedTabs, []);
+    assert.equal(h.session.tabs[0].url, 'https://example.com/from-history');
   } finally { h.dispose(); }
 });
 

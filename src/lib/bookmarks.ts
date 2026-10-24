@@ -1,5 +1,5 @@
 export interface Bookmark { id: string; title: string; url: string; folderId: string | null }
-export interface BookmarkFolder { id: string; name: string }
+export interface BookmarkFolder { id: string; name: string; parentId?: string | null; order?: string[] }
 export interface BookmarkData { bookmarks: Bookmark[]; folders: BookmarkFolder[]; barOrder?: string[] }
 export type BookmarkBarItem = { id: string; kind: 'folder'; folder: BookmarkFolder } | { id: string; kind: 'bookmark'; bookmark: Bookmark };
 export const BOOKMARKS_KEY = 'auraview.bookmarks.v1';
@@ -29,6 +29,17 @@ export function loadBookmarks(storage: Pick<Storage, 'getItem'>): BookmarkData {
     if (!folder || !validId(folder.id) || typeof folder.name !== 'string' || !folder.name.trim()) throw new Error('Invalid bookmark folder');
   }
   const folders = new Set(data.folders.map((folder) => folder.id));
+  const byId = new Map(data.folders.map((folder) => [folder.id, folder]));
+  for (const folder of data.folders) {
+    if (folder.order !== undefined && (!Array.isArray(folder.order) || folder.order.some((id) => typeof id !== 'string'))) throw new Error('Invalid bookmark folder order');
+    const seen = new Set([folder.id]);
+    let parentId = folder.parentId;
+    while (parentId != null) {
+      if (!folders.has(parentId) || seen.has(parentId) || seen.size > 128) throw new Error('Invalid bookmark folder parent');
+      seen.add(parentId);
+      parentId = byId.get(parentId)!.parentId;
+    }
+  }
   for (const bookmark of data.bookmarks) {
     if (!bookmark || !validId(bookmark.id) || typeof bookmark.title !== 'string' || !bookmark.title.trim()
       || typeof bookmark.url !== 'string' || !/^https?:\/\//i.test(bookmark.url)
@@ -42,18 +53,54 @@ export function saveBookmarks(storage: Pick<Storage, 'setItem'>, data: BookmarkD
   storage.setItem(BOOKMARKS_KEY, JSON.stringify(data));
 }
 
+export function deleteBookmarkFolder(data: BookmarkData, id: string): BookmarkData {
+  if (!data.folders.some((folder) => folder.id === id)) return data;
+  const removed = new Set([id]);
+  const children = new Map<string, string[]>();
+  for (const folder of data.folders) if (folder.parentId) {
+    const siblings = children.get(folder.parentId) || [];
+    siblings.push(folder.id); children.set(folder.parentId, siblings);
+  }
+  const queue = [id];
+  for (let index = 0; index < queue.length; index++) for (const child of children.get(queue[index]) || []) {
+    if (!removed.has(child)) { removed.add(child); queue.push(child); }
+  }
+  const deletedIds = new Set(removed);
+  const bookmarks = data.bookmarks.filter((bookmark) => {
+    if (bookmark.folderId === null || !removed.has(bookmark.folderId)) return true;
+    deletedIds.add(bookmark.id); return false;
+  });
+  return { ...data, bookmarks,
+    folders: data.folders.filter((folder) => !removed.has(folder.id)).map((folder) => folder.order ? { ...folder, order: folder.order.filter((item) => !deletedIds.has(item)) } : folder),
+    ...(data.barOrder ? { barOrder: data.barOrder.filter((item) => !deletedIds.has(item)) } : {}),
+  };
+}
+
 export function bookmarkBarItems(data: BookmarkData): BookmarkBarItem[] {
+  return bookmarkFolderItems(data, null);
+}
+
+export function bookmarkFolderItems(data: BookmarkData, folderId: string | null): BookmarkBarItem[] {
   const items: BookmarkBarItem[] = [
-    ...data.folders.map((folder): BookmarkBarItem => ({ id: folder.id, kind: 'folder', folder })),
-    ...data.bookmarks.filter((bookmark) => bookmark.folderId === null).map((bookmark): BookmarkBarItem => ({ id: bookmark.id, kind: 'bookmark', bookmark })),
+    ...data.folders.filter((folder) => (folder.parentId ?? null) === folderId).map((folder): BookmarkBarItem => ({ id: folder.id, kind: 'folder', folder })),
+    ...data.bookmarks.filter((bookmark) => bookmark.folderId === folderId).map((bookmark): BookmarkBarItem => ({ id: bookmark.id, kind: 'bookmark', bookmark })),
   ];
   const remaining = new Map(items.map((item) => [item.id, item]));
   const ordered: BookmarkBarItem[] = [];
-  for (const id of data.barOrder || []) {
+  const order = folderId === null ? data.barOrder : data.folders.find((folder) => folder.id === folderId)?.order;
+  for (const id of order || []) {
     const item = remaining.get(id);
     if (item) { ordered.push(item); remaining.delete(id); }
   }
   return [...ordered, ...remaining.values()];
+}
+
+export function bookmarkFolderPath(data: BookmarkData, id: string): string {
+  const names: string[] = [], seen = new Set<string>();
+  for (let folder = data.folders.find((item) => item.id === id); folder && !seen.has(folder.id); folder = data.folders.find((item) => item.id === folder!.parentId)) {
+    seen.add(folder.id); names.unshift(folder.name);
+  }
+  return names.join(' / ');
 }
 
 export function reorderBookmarkIds(ids: string[], id: string, index: number): string[] {
@@ -74,12 +121,14 @@ export function moveBookmarkItem(data: BookmarkData, id: string, index: number, 
     return barOrder === ids ? data : { ...data, barOrder };
   }
   const children = data.bookmarks.filter((item) => item.folderId === folderId);
-  const ids = children.map((item) => item.id);
+  const ids = bookmarkFolderItems(data, folderId).map((item) => item.id);
   const order = reorderBookmarkIds(ids, id, index);
   if (order === ids) return data;
   const byId = new Map(children.map((item) => [item.id, item]));
   let cursor = 0;
-  return { ...data, bookmarks: data.bookmarks.map((item) => item.folderId === folderId ? byId.get(order[cursor++])! : item) };
+  const bookmarks = order.filter((id) => byId.has(id));
+  return { ...data, folders: data.folders.map((folder) => folder.id === folderId ? { ...folder, order } : folder),
+    bookmarks: data.bookmarks.map((item) => item.folderId === folderId ? byId.get(bookmarks[cursor++])! : item) };
 }
 
 export function putBookmark(data: BookmarkData, draft: { id?: string; title: string; url: string; folderId: string | null; newFolder?: string }): BookmarkData {
@@ -91,7 +140,7 @@ export function putBookmark(data: BookmarkData, draft: { id?: string; title: str
   if (draft.newFolder !== undefined) {
     const name = draft.newFolder.trim();
     if (!name) throw new Error('Enter a name for the new folder.');
-    const existing = folders.find((folder) => folder.name.toLowerCase() === name.toLowerCase());
+    const existing = folders.find((folder) => folder.parentId == null && folder.name.toLowerCase() === name.toLowerCase());
     const folder = existing || { id: crypto.randomUUID(), name };
     if (!existing) folders = [...folders, folder];
     folderId = folder.id;

@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 export interface BookmarkMenuItem { id: string; label: string; enabled?: boolean }
 export interface BookmarkMenuState { x: number; y: number; items: BookmarkMenuItem[] }
 
-export function BookmarkMenu({ menu, onSelect, onClose }: { menu: BookmarkMenuState; onSelect: (id: string) => void; onClose: () => void }) {
+export function BookmarkMenu({ menu, onSelect, onClose, label = 'Bookmarks' }: { menu: BookmarkMenuState; onSelect: (id: string) => void; onClose: () => void; label?: string }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -21,7 +21,7 @@ export function BookmarkMenu({ menu, onSelect, onClose }: { menu: BookmarkMenuSt
       previous?.focus();
     };
   }, [onClose]);
-  return createPortal(<div ref={ref} role="menu" aria-label="Bookmarks" className="fixed z-50 max-h-[60vh] w-64 max-w-[calc(100vw-16px)] overflow-y-auto rounded-lg border border-[#374151] bg-[#111923] p-1 shadow-2xl text-xs"
+  return createPortal(<div ref={ref} role="menu" aria-label={label} className="fixed z-50 max-h-[60vh] w-64 max-w-[calc(100vw-16px)] overflow-y-auto rounded-lg border border-[#374151] bg-[#111923] p-1 shadow-2xl text-xs"
     style={{ left: Math.max(8, Math.min(menu.x, window.innerWidth - 264)), top: Math.max(8, Math.min(menu.y, window.innerHeight - Math.min(menu.items.length * 36 + 8, window.innerHeight * 0.6) - 8)) }}
     onContextMenu={(event) => event.preventDefault()} onKeyDown={(event) => {
       event.stopPropagation();

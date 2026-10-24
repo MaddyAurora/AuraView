@@ -16,7 +16,22 @@ pub fn script(token: &str) -> String {
 }
 
 #[derive(serde::Deserialize)]
-struct Request { kind: String, token: String, id: String, url: String, data: Option<String>, mime: Option<String> }
+struct Request { kind: String, token: String, id: String, url: String, data: Option<String>, mime: Option<String>, message: Option<String> }
+
+#[cfg(windows)]
+fn report(app: &AppHandle, request: &Request, status: &str, message: &str, path: Option<&Path>) {
+    let title = tauri::Url::parse(&request.url).ok().filter(|url| matches!(url.scheme(), "http" | "https" | "file"))
+        .and_then(|url| url.path_segments().and_then(|mut parts| parts.next_back()).map(|name|
+            percent_encoding::percent_decode_str(name).decode_utf8_lossy().into_owned()))
+        .filter(|name| !name.is_empty()).unwrap_or_else(|| "Image".into());
+    let mut entry = crate::downloads::Entry::new("image", &request.id, &title);
+    entry.status = status.into(); entry.message = message.into();
+    entry.filename = path.and_then(|path| path.file_name()).map(|name| name.to_string_lossy().into_owned());
+    if let Some(size) = path.and_then(|path| std::fs::metadata(path).ok()).map(|metadata| metadata.len()) {
+        entry.downloaded = size; entry.total = Some(size); entry.percent = Some(100.);
+    }
+    crate::downloads::publish(app, entry);
+}
 
 fn image_extension(mime: &str) -> Option<&'static str> {
     match mime.split(';').next()?.trim().to_ascii_lowercase().as_str() {
@@ -203,11 +218,13 @@ fn decode_content(content: &str, encoded: bool) -> Result<Vec<u8>, String> {
 
 #[cfg(windows)]
 async fn handle(app: AppHandle, webview: tauri::Webview, request: Request, source: String) {
+    report(&app, &request, "preparing", "Saving image…", None);
     let result = if let Some(data) = &request.data {
         decode_content(data, true).map(|bytes| (bytes, request.mime.clone().unwrap_or_default()))
     } else { loaded_image(&webview, &request.url, &source).await };
     if let Err(error) = &result {
         if request.data.is_none() {
+            report(&app, &request, "error", "Could not read the image. Trying its page…", None);
             let payload = json!({"id": request.id, "status": "read-in-page", "message": format!("Could not save image: {error}. Click to retry.")});
             let _ = webview.eval(&format!("window.dispatchEvent(new CustomEvent('auraview-image-result', {{detail: {payload}}}));"));
             return;
@@ -225,8 +242,18 @@ async fn handle(app: AppHandle, webview: tauri::Webview, request: Request, sourc
         Err(error) => Err(error),
     };
     let payload = match result {
-        Ok(path) => json!({"id": request.id, "status": "saved", "filename": path.file_name().unwrap_or_default().to_string_lossy()}),
-        Err(error) => json!({"id": request.id, "status": "error", "message": format!("Could not save image: {error}. Click to retry.")}),
+        Ok(path) => {
+            crate::downloads::remember("image", &request.id, &path, crate::downloads::Replay::Resource {
+                url: request.url.clone(), source: source.clone(), label: webview.label().into(),
+                mime: request.mime.clone().unwrap_or_default(),
+            });
+            report(&app, &request, "saved", "Saved to Downloads", Some(&path));
+            json!({"id": request.id, "status": "saved", "filename": path.file_name().unwrap_or_default().to_string_lossy()})
+        },
+        Err(error) => {
+            report(&app, &request, "error", &format!("Could not save image: {error}. Use its download button to retry."), None);
+            json!({"id": request.id, "status": "error", "message": format!("Could not save image: {error}. Click to retry.")})
+        },
     };
     let _ = webview.eval(&format!("window.dispatchEvent(new CustomEvent('auraview-image-result', {{detail: {payload}}}));"));
 }
@@ -265,8 +292,12 @@ mod bridge {
                 let message = webview2_com::take_pwstr(message);
                 if message.len() > MAX_IMAGE_BYTES * 4 / 3 + 8192 { return; }
                 let Ok(request) = serde_json::from_str::<Request>(&message) else { return };
-                if request.kind != "auraview-image-download" || request.token != secret || request.id.len() > 80 { return; }
+                if !matches!(request.kind.as_str(), "auraview-image-download" | "auraview-image-failed") || request.token != secret || request.id.is_empty() || request.id.len() > 80 { return; }
                 if !tauri::Url::parse(&request.url).is_ok_and(|url| matches!(url.scheme(), "http" | "https" | "blob" | "data" | "file")) { return; }
+                if request.kind == "auraview-image-failed" {
+                    let message: String = request.message.as_deref().unwrap_or("Could not save image. Use its download button to retry.").chars().take(1024).collect();
+                    report(&app, &request, "error", &message, None); return;
+                }
                 let mut source = windows_core::PWSTR::null();
                 if args.Source(&mut source).is_err() { return; }
                 let source = webview2_com::take_pwstr(source);

@@ -39,7 +39,7 @@ export const DEFAULT_AI_SERVERS: AIServerBookmark[] = [
     name: 'ComfyUI',
     port: 8188,
     badge: 'Node / Diffusion',
-    color: 'from-amber-500 to-orange-600',
+    color: '#f59e0b',
     description: 'Local node-based Stable Diffusion & FLUX workflow generator',
   },
   {
@@ -47,7 +47,7 @@ export const DEFAULT_AI_SERVERS: AIServerBookmark[] = [
     name: 'Open WebUI',
     port: 3000,
     badge: 'LLM Chat',
-    color: 'from-cyan-500 to-blue-600',
+    color: '#06b6d4',
     description: 'Chat interface for local Ollama, vLLM, and HuggingFace models',
   },
   {
@@ -55,7 +55,7 @@ export const DEFAULT_AI_SERVERS: AIServerBookmark[] = [
     name: 'Ollama API',
     port: 11434,
     badge: 'API Engine',
-    color: 'from-emerald-500 to-teal-600',
+    color: '#10b981',
     description: 'Local LLM inference server status & endpoints',
   },
   {
@@ -63,7 +63,7 @@ export const DEFAULT_AI_SERVERS: AIServerBookmark[] = [
     name: 'Pinokio',
     port: 42000,
     badge: 'AI Browser',
-    color: 'from-purple-500 to-indigo-600',
+    color: '#a855f7',
     description: 'Autonomous AI browser & model runner dashboard',
   },
 ];

@@ -13,9 +13,17 @@ mod tab_context_menu;
 mod tab_audio;
 mod image_download;
 mod video_download;
+mod downloads;
+mod downloads_preview;
+mod browser_download;
+mod download_files;
 mod bookmark_menu;
 mod bookmark_editor;
 mod bookmark_folder;
+mod bookmark_transfer;
+mod ai_dock;
+mod browser_history;
+mod browser_settings;
 
 struct BrowserState {
     last_requested_url: String,
@@ -735,8 +743,6 @@ fn app_close(app: AppHandle) {
         log_debug("app_close: closing window 'main'");
         let _ = w.close();
     }
-    log_debug("app_close: exiting app");
-    app.exit(0);
 }
 
 #[tauri::command]
@@ -914,6 +920,7 @@ fn emit_native_location(app: &AppHandle,
         let forward = core.CanGoForward(&mut forward).is_ok().then(|| forward.as_bool());
         let status = location_status(&mut state.lock().unwrap(), tab_id, pane, &url, back, forward);
         let _ = app.emit("webview-status", status);
+        browser_settings::prune(app);
     }
     Ok(())
 }
@@ -1242,6 +1249,7 @@ fn create_browser_view(app: &AppHandle, tab_id: &str, pane: &'static str, bounds
             let loading = matches!(payload.event(), tauri::webview::PageLoadEvent::Started);
             let _ = app_load.emit("webview-status", navigation_status(&load_tab, pane, url, loading));
             if !loading {
+                browser_settings::prune(&app_load);
                 emit_history_status(app_load.clone(), &webview, &load_tab, pane);
                 if url.starts_with("chrome-error://") || url.starts_with("edge://chromewebdata") {
                     let failed = load_state.lock().unwrap().last_requested_url.clone();
@@ -1270,6 +1278,7 @@ fn create_browser_view(app: &AppHandle, tab_id: &str, pane: &'static str, bounds
         LogicalSize::new(bounds.width, bounds.height)).map_err(|error| error.to_string())?;
     image_download::install(app, &child, image_token).map_err(|error| error.to_string())?;
     video_download::install(app, &child, video_token).map_err(|error| error.to_string())?;
+    browser_download::install(app, &child).map_err(|error| error.to_string())?;
     install_location_events(app, &child, tab_id, pane).map_err(|error| error.to_string())?;
     fullscreen::install(app, &child, BrowserViewRef { tab_id: tab_id.to_string(), pane: pane.to_string() })
         .map_err(|error| error.to_string())?;
@@ -1288,6 +1297,7 @@ fn create_browser_view(app: &AppHandle, tab_id: &str, pane: &'static str, bounds
             }
         }
     });
+    browser_settings::prune(app);
     if initial_url.scheme() == "data" {
         child.navigate(initial_url).map_err(|error| error.to_string())?;
     }
@@ -1299,19 +1309,30 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .on_window_event(|window, event| {
-            // Owned folder popups dismiss when interaction returns to the
-            // browser window. Native context menus keep their popup owner.
-            if window.label() == "main" && matches!(event, tauri::WindowEvent::Focused(true) | tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_)) {
-                let _ = bookmark_folder::close(window.app_handle());
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event { browser_settings::close_requested(window.app_handle(), api); }
+                if matches!(event, tauri::WindowEvent::Focused(false) | tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_)) {
+                    downloads_preview::hide(window.app_handle());
+                }
+                if matches!(event, tauri::WindowEvent::Focused(true)) {
+                    let _ = bookmark_folder::main_focused(window);
+                    browser_settings::main_focused(window);
+                } else if matches!(event, tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_)) {
+                    let _ = bookmark_folder::close(window.app_handle());
+                    browser_settings::dismiss(window.app_handle());
+                }
             }
         })
         .on_menu_event(|app, event| {
             tab_overflow::selected(app, event.id().as_ref());
             tab_context_menu::selected(app, event.id().as_ref());
             bookmark_menu::selected(app, event.id().as_ref());
+            ai_dock::selected(app, event.id().as_ref());
         })
         .setup(|app| {
             fullscreen::initialize(app.handle())?;
+            browser_settings::initialize(app.handle()).map_err(std::io::Error::other)?;
+            if let Some(main) = app.get_webview("main") { browser_settings::attach(&main).map_err(std::io::Error::other)?; }
             if let Some(main) = app.get_webview("main") { shortcuts::install(app.handle(), &main, None)?; }
             create_browser_view(app.handle(), "tab-1", "primary",
                 BrowserBounds { x: 0.0, y: 80.0, width: 1280.0, height: 760.0 },
@@ -1327,8 +1348,17 @@ pub fn run() {
             tab_context_menu::show_tab_context_menu, bookmark_menu::show_bookmark_menu,
             tab_audio::set_browser_muted,
             video_download::list_video_downloads, video_download::cancel_video_download, video_download::retry_video_download,
+            downloads::list_downloads, downloads::cancel_download, downloads::retry_download,
+            downloads::reveal_download, downloads::delete_download, downloads::redownload_download,
+            downloads_preview::set_downloads_preview, downloads_preview::downloads_preview_ready,
             bookmark_editor::show_bookmark_editor, bookmark_editor::get_bookmark_editor, bookmark_editor::close_bookmark_editor,
-            bookmark_folder::show_bookmark_folder, bookmark_folder::get_bookmark_folder, bookmark_folder::close_bookmark_folder
+            bookmark_folder::show_bookmark_folder, bookmark_folder::get_bookmark_folder, bookmark_folder::close_bookmark_folder,
+            bookmark_transfer::import_bookmarks_html, bookmark_transfer::export_bookmarks_html,
+            ai_dock::show_ai_dock_menu, ai_dock::show_ai_dock_editor, ai_dock::get_ai_dock_editor, ai_dock::close_ai_dock_editor,
+            browser_settings::toggle_browser_settings, browser_settings::close_browser_settings,
+            browser_settings::get_browser_settings, browser_settings::set_keep_history, browser_settings::clear_browser_data,
+            browser_settings::open_browser_history, browser_settings::list_browser_history, browser_settings::open_history_url,
+            browser_settings::browser_settings_ready
         ])
         .run(tauri::generate_context!())
         .expect("error while running AuraView application");

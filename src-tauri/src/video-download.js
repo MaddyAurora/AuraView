@@ -6,6 +6,13 @@
   const states = new WeakMap(), pending = new Map(), videos = new Set(), encrypted = new WeakSet();
   const mediaStreams = __AURAVIEW_MEDIA_STREAMS__;
   let host, button, icon, badge, active, focused, observer, resizeObserver, frame = 0, leaving = false, recheckPending = false, x = -1, y = -1;
+  let pointerIdle = false, idleTimer = 0;
+  function clearIdleTimer() { clearTimeout(idleTimer); idleTimer = 0; }
+  function showTemporarily() {
+    pointerIdle = false;
+    clearIdleTimer();
+    idleTimer = setTimeout(() => { idleTimer = 0; pointerIdle = true; schedule(); }, 3000);
+  }
   const roots = new WeakSet();
   const download = 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3';
   const busy = (status) => ['preparing', 'downloading', 'merging', 'saving', 'cancelling'].includes(status);
@@ -72,10 +79,25 @@
       }
     }
   }
+  function watchPageLink(u) {
+    if (!/^https?:$/.test(u.protocol)) return;
+    if (/(^|\.)pornhub\.com$/.test(u.hostname)) {
+      const keys = u.searchParams.getAll('viewkey');
+      const id = /^\/(?:view_video\.php|video\/show)$/.test(u.pathname)
+        ? (keys.length === 1 ? keys[0] : '') : /^\/embed\/([a-z0-9]+)\/?$/.exec(u.pathname)?.[1];
+      if (id && /^[a-z0-9]+$/.test(id)) return `${u.origin}/view_video.php?viewkey=${id}`;
+    }
+    if (/(^|\.)xvideos\.com$/.test(u.hostname)
+      && /^\/video(?:\.[a-z0-9]+|\d+)(?:\/[^/]+)?\/?$/.test(u.pathname)) {
+      return `${u.origin}${u.pathname}`;
+    }
+  }
   function mediaLink(value) {
     try {
       const u = new URL(value, location.href), h = u.hostname;
       if (!/^https?:$/.test(u.protocol)) return;
+      const watch = watchPageLink(u);
+      if (watch) return watch;
       if (/(^|\.)youtube\.com$/.test(h)) {
         const id = u.searchParams.get('v') || /^\/(?:shorts|embed)\/([^/?]+)/.exec(u.pathname)?.[1];
         if (id) return `https://www.youtube.com/watch?v=${encodeURIComponent(id)}`;
@@ -86,11 +108,35 @@
         if (post) return `https://x.com/i/status/${post[1]}${post[2] ? `/video/${post[2]}` : ''}`;
       }
       if (/(^|\.)instagram\.com$/.test(h)) {
+        // A story URL needs its numeric item ID; the account/highlight URL is
+        // a collection and must never download an arbitrary story from it.
+        const story = /^\/stories\/([A-Za-z0-9_.]+)\/(\d+)\/?$/.exec(u.pathname);
+        if (story && story[1].toLowerCase() !== 'highlights') return `https://www.instagram.com/stories/${story[1]}/${story[2]}/`;
         // /reels/audio/<id>/ is a soundtrack page, not the post under the pointer.
         const post = /^\/(?:[^/]+\/)?(p|reels?|tv)\/([A-Za-z0-9_-]+)\/?$/.exec(u.pathname);
         if (post) return `https://www.instagram.com/${/^reel/.test(post[1]) ? 'reel' : post[1]}/${post[2]}/`;
       }
     } catch { /* not a media permalink */ }
+  }
+  function instagramMedia(video) {
+    const result = { poster: video.poster || '', playerId: '' };
+    if (!/^\/stories\//.test(location.pathname)) return result;
+    // Instagram's streaming story player keeps its media ID (and sometimes
+    // poster) in the owning React component. Read only that player's metadata; do
+    // not search shared stores, children, or neighboring story components.
+    try {
+      let fiber = video[Object.keys(video).find(key => key.startsWith('__reactFiber$'))];
+      for (let depth = 0; fiber && depth < 18; depth++, fiber = fiber.return) {
+        const props = fiber.memoizedProps;
+        const metadata = props?.coreVideoPlayerMetaData || props?.coreVideoPlayerProps?.coreVideoPlayerMetaData;
+        if (!metadata) continue;
+        const poster = metadata.poster;
+        result.poster ||= typeof poster === 'string' ? poster : poster?.uri || poster?.url || '';
+        if (typeof metadata.videoFBID === 'string' && /^\d+$/.test(metadata.videoFBID)) result.playerId = metadata.videoFBID;
+        return result;
+      }
+    } catch { /* player internals may change; keep normal extraction available */ }
+    return result;
   }
   function target(video) {
     let url = video.currentSrc || video.src || '', pageUrl = '', ambiguous = false;
@@ -110,7 +156,8 @@
         if (twitter && new URL(link).hostname !== 'x.com') continue;
         // Instagram puts both /p/<code>/ timestamps and /reels/<code>/ player
         // links on the same card. They identify one video, not two candidates.
-        const id = instagram ? new URL(link).pathname.split('/')[2] : link;
+        const path = new URL(link).pathname.split('/');
+        const id = instagram ? (path[1] === 'stories' ? `story:${path[3]}` : `post:${path[2]}`) : link;
         if (!links.has(id)) links.set(id, link);
       }
       if (links.size === 1) { pageUrl = [...links.values()][0]; break; }
@@ -128,20 +175,44 @@
     // Watch players can contain end-screen links to unrelated videos. Their
     // current route identifies the main player even while recommendations load.
     if (youtube && /^(\/watch|\/embed\/)/.test(location.pathname) && video.closest?.('#movie_player')) pageUrl = mediaLink(location.href) || '';
-    // Shorts/Reels preload adjacent players. Only the dominant visible player
-    // may use the route when no individual player link was found.
-    if (!pageUrl && mediaLink(location.href)) {
+    // Shorts/Reels/Stories preload adjacent players. Only the dominant visible
+    // player may use the route. A story may contain a link to a reshared post;
+    // the current story ID takes precedence over that unrelated permalink.
+    const route = mediaLink(location.href), storyRoute = instagram && route?.includes('/stories/');
+    // Recognized watch pages can retain ad/preview video elements after the
+    // main player starts streaming. Their dominant player still owns the route,
+    // including when its controls contain links to recommended videos.
+    const watchRoute = watchPageLink(new URL(location.href));
+    if (route && (!pageUrl || storyRoute || watchRoute)) {
       const area = (v) => { const r = rectFor(v); return r ? (r.right - r.left) * (r.bottom - r.top) : 0; };
-      const ordered = [...visible].sort((a, b) => area(b) - area(a));
-      if (ordered[0] === video && (ordered.length === 1 || area(ordered[0]) > area(ordered[1]) * 1.5)) pageUrl = mediaLink(location.href);
+      let candidates = visible;
+      if (watchRoute) {
+        const r = rectFor(video);
+        // A finished ad can remain underneath the main video at exactly the
+        // same bounds. Count that slot once only when the selected video is
+        // actually above it; separate players still make the route ambiguous.
+        const top = r && document.elementsFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2)
+          .find(node => node instanceof HTMLVideoElement);
+        if (top === video) candidates = visible.filter(other => {
+          if (other === video) return true;
+          const bounds = rectFor(other);
+          return !bounds || ['left', 'right', 'top', 'bottom'].some(side => Math.abs(bounds[side] - r[side]) > 2);
+        });
+      }
+      const ordered = [...candidates].sort((a, b) => area(b) - area(a));
+      if (ordered[0] === video && (ordered.length === 1 || area(ordered[0]) > area(ordered[1]) * 1.5)) pageUrl = route;
     }
+    // Account-only story routes can also contain a reshared Reel link. Resolve
+    // the story's player data instead of downloading that separate post.
+    if (instagram && /^\/stories\//.test(location.pathname) && !pageUrl.includes('/stories/')) pageUrl = '';
     if (youtube && !/youtube\.com\/watch\?v=/.test(pageUrl)) pageUrl = '';
     const ad = youtube && Boolean(video.closest?.('.ad-showing'));
     // During a YouTube ad, the watch route still belongs to the main video.
     // Only the media bound to the current player may identify that download.
     if (ad) pageUrl = '';
-    return { url, pageUrl, title: ad ? 'Video advertisement' : video.getAttribute('aria-label') || document.title || 'Video',
-      key: `${url}\n${pageUrl}`, youtube, ad: youtube && Boolean(video.closest?.('.ad-showing')), drm: Boolean(video.mediaKeys || encrypted.has(video)), live: video.duration === Infinity };
+    const { poster, playerId } = instagram ? instagramMedia(video) : { poster: '', playerId: '' };
+    return { url, pageUrl, poster, playerId, title: ad ? 'Video advertisement' : video.getAttribute('aria-label') || document.title || 'Video',
+      key: `${url}\n${pageUrl}\n${poster}\n${playerId}`, youtube, ad: youtube && Boolean(video.closest?.('.ad-showing')), drm: Boolean(video.mediaKeys || encrypted.has(video)), live: video.duration === Infinity };
   }
   function post(payload) { try { send(stringify({ ...payload, token })); } catch { return false; } return true; }
   function mount() {
@@ -178,7 +249,8 @@
       const state = { ...info, id, status: 'preparing', message: 'Preparing video…' };
       states.set(video, state); pending.set(id, { video, state });
       const streams = mediaStreams.hints(video, { singlePlayer: [...videos].filter((v) => v.isConnected).length === 1, boundOnly: info.ad });
-      if (!post({ kind: 'auraview-video-download', id, url: info.url, pageUrl: info.pageUrl, title: info.title,
+      if (!post({ kind: 'auraview-video-download', id, url: info.url, pageUrl: info.pageUrl, poster: info.poster, title: info.title,
+        instagramVideoId: info.playerId,
         streams, streamOnly: info.ad, duration: Number.isFinite(video.duration) && video.duration > 0 ? video.duration : null })) {
         state.status = 'error'; state.message = 'Unable to start download. Click to retry.'; pending.delete(id);
       }
@@ -200,7 +272,10 @@
   }
   function render() {
     if (!button) return;
-    if (!active?.isConnected || leaving || document.hidden) { button.style.display = badge.style.display = 'none'; return; }
+    if (!active?.isConnected || leaving || document.hidden
+      || (pointerIdle && !button.matches(':focus-visible'))) {
+      button.style.display = badge.style.display = 'none'; return;
+    }
     const r = playable(active);
     if (!r) { button.style.display = badge.style.display = 'none'; return; }
     const info = target(active), stored = states.get(active), state = stored?.key === info.key ? stored : undefined;
@@ -235,14 +310,16 @@
   }
   window.addEventListener('pointermove', (e) => {
     if (!e.isTrusted || e.pointerType === 'touch') return;
+    if (x !== e.clientX || y !== e.clientY) showTemporarily();
     x = e.clientX; y = e.clientY; active = videoAt(e); schedule();
   }, { capture: true, passive: true });
   document.addEventListener('focusin', (e) => {
     if (e.composedPath().includes(host)) return;
     focused = e.target instanceof HTMLVideoElement ? e.target : [...videos].find((v) => e.target.contains?.(v) && playable(v));
+    if (focused?.matches(':focus-visible')) showTemporarily();
     active = focused; schedule();
   });
-  function hide() { if (focused) return; active = undefined; x = y = -1; schedule(); }
+  function hide() { if (focused) return; clearIdleTimer(); pointerIdle = true; active = undefined; x = y = -1; schedule(); }
   document.addEventListener('pointerleave', hide);
   window.addEventListener('blur', () => { focused = undefined; hide(); });
   document.addEventListener('scroll', () => schedule(true), { capture: true, passive: true });
@@ -253,7 +330,7 @@
   document.addEventListener('visibilitychange', () => { if (document.hidden) { focused = undefined; hide(); } else schedule(true); });
   window.addEventListener('auraview-video-result', (e) => result({ ...e.detail, kind: 'auraview-video-result' }));
   window.addEventListener('message', (e) => { if (e.source === window.parent && window.parent !== window) result(e.data); });
-  window.addEventListener('pagehide', () => { leaving = true; cancelAnimationFrame(frame); frame = 0; pending.clear(); if (button) button.style.display = badge.style.display = 'none'; });
+  window.addEventListener('pagehide', () => { leaving = true; clearIdleTimer(); pointerIdle = true; x = y = -1; focused = undefined; cancelAnimationFrame(frame); frame = 0; pending.clear(); if (button) button.style.display = badge.style.display = 'none'; });
   window.addEventListener('pageshow', () => { leaving = false; track(document); schedule(true); });
   document.addEventListener('DOMContentLoaded', mount, { once: true });
   mount();

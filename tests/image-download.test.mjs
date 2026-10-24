@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import vm from 'node:vm';
+import { fakeClock } from './fixtures/fake-clock.mjs';
 
 const source = readFileSync(new URL('../src-tauri/src/image-download.js', import.meta.url), 'utf8')
   .replace('__AURAVIEW_IMAGE_TOKEN__', '"test-bridge-token"');
 
 function page({ observe = false } = {}) {
+  const clock = fakeClock();
   const documentEvents = new Map(), windowEvents = new Map(), frames = new Map(), messages = [], created = [];
   let nextFrame = 0, nextRequest = 0, hit = null, fetches = 0;
   let fetchResult = async () => { throw new Error('No response configured'); };
@@ -91,11 +93,13 @@ function page({ observe = false } = {}) {
       backgroundColor: 'rgba(0, 0, 0, 0)', display: 'block', visibility: 'visible', opacity: '1', ...element.style }),
     requestAnimationFrame: (callback) => { frames.set(++nextFrame, callback); return nextFrame; },
     cancelAnimationFrame: (id) => frames.delete(id),
+    setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
     fetch: (...args) => { fetches++; return fetchResult(...args); },
   });
   const button = created.find((element) => element.tagName === 'BUTTON');
   const h = {
-    window, document, button, messages, Element, Image,
+    window, document, button, messages, Element, Image, clock,
+    advance(ms) { clock.advance(ms); h.flush(); },
     get fetches() { return fetches; },
     tracked,
     mutate(records) { mutation(records); },
@@ -129,6 +133,41 @@ test('the hover button stays in the image corner and disappears on non-images, b
   h.hover(image); h.window.fire('blur'); h.flush(); assert.equal(h.button.style.display, 'none');
   h.hover(image); h.window.fire('pagehide'); assert.equal(h.button.style.display, 'none');
   h.window.fire('pageshow'); h.hover(image); assert.equal(h.button.style.display, 'grid');
+});
+
+test('image overlays time out after three seconds and restart only when the pointer changes position', () => {
+  const h = page(), image = h.image();
+  h.hover(image); h.advance(2999); assert.equal(h.button.style.display, 'grid');
+  h.advance(1); assert.equal(h.button.style.display, 'none');
+  h.hover(image); assert.equal(h.button.style.display, 'none');
+  h.hover(image, 386, 265); assert.equal(h.button.style.display, 'grid');
+  h.advance(2000); h.hover(image, 387, 265); h.advance(1000);
+  assert.equal(h.button.style.display, 'grid'); assert.equal(h.clock.pending, 1);
+  h.advance(2000); assert.equal(h.button.style.display, 'none');
+});
+
+test('image completion and layout changes stay hidden while idle, and page exit clears the deadline', () => {
+  const h = page({ observe: true }), image = h.image();
+  h.hover(image); h.click(); h.advance(3000);
+  h.result('request-1', 'saved', { filename: 'photo.png' });
+  h.mutate([{ addedNodes: [], removedNodes: [] }]); h.flush();
+  h.document.fire('load'); h.document.fire('scroll'); h.flush();
+  assert.equal(h.button.style.display, 'none');
+  h.hover(image, 386, 265); assert.equal(h.button.style.display, 'grid');
+  assert.match(h.button.title, /Saved photo.png/);
+  h.window.fire('pagehide'); assert.equal(h.clock.pending, 0);
+  h.window.fire('pageshow'); h.flush(); assert.equal(h.button.style.display, 'none');
+  h.hover(image, 386, 265); assert.equal(h.button.style.display, 'grid');
+  h.window.fire('blur'); h.flush(); assert.equal(h.clock.pending, 0);
+});
+
+test('an image download action with keyboard focus remains available until focus leaves', () => {
+  const h = page(), image = h.image();
+  h.button.matches = () => h.button.focusVisible;
+  h.hover(image); h.button.focusVisible = true; h.button.fire('focus'); h.advance(3000);
+  assert.equal(h.button.style.display, 'grid');
+  h.button.focusVisible = false; h.button.fire('blur'); h.flush();
+  assert.equal(h.button.style.display, 'none');
 });
 
 test('trusted clicks download currentSrc without following image links and suppress duplicate in-flight clicks', () => {
@@ -304,5 +343,6 @@ test('a failed fetch leaves a retry action and page exit ignores late blob reads
   h.hover(image); h.click(); await h.settled(); assert.match(h.button.title, /retry/);
   h.response({ ok: true, blob: async () => ({ size: 4, type: 'image/png', data: 'AQIDBA==' }) });
   h.click(); h.window.fire('pagehide'); await h.settled();
-  assert.equal(h.messages.length, 0); assert.equal(h.button.style.display, 'none');
+  assert.equal(h.messages.length, 1); assert.equal(h.messages[0].kind, 'auraview-image-failed');
+  assert.equal(h.button.style.display, 'none');
 });

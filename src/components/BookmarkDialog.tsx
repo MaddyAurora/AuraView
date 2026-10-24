@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Bookmark as BookmarkIcon, X } from 'lucide-react';
-import { BookmarkData, putBookmark } from '../lib/bookmarks';
+import { BookmarkData, bookmarkFolderPath, putBookmark } from '../lib/bookmarks';
 
 export interface BookmarkDraft { id?: string; title: string; url: string; folderId: string | null }
 interface Props { draft: BookmarkDraft; data: BookmarkData; onSave: (data: BookmarkData) => void | Promise<void>; onClose: () => void; standalone?: boolean }
@@ -36,7 +36,7 @@ export function BookmarkDialog({ draft, data, onSave, onClose, standalone = fals
         <label className="block">Folder<select value={folder} onChange={(event) => setFolder(event.target.value)} className="bookmark-input">
           <option value="">Root</option>
           <option value="__new__">Create folder…</option>
-          {data.folders.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          {data.folders.map((item) => <option key={item.id} value={item.id}>{bookmarkFolderPath(data, item.id)}</option>)}
         </select></label>
         {folder === '__new__' && <label className="block">New folder name<input required value={folderName} onChange={(event) => setFolderName(event.target.value)} className="bookmark-input" placeholder="Folder name" /></label>}
         {error && <p role="alert" className="text-red-300">{error}</p>}

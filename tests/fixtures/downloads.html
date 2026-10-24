@@ -1,0 +1,10 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AuraView Downloads checks</title>
+<style>body{max-width:900px;margin:32px auto;padding:0 24px;background:#090c10;color:#e2e8f0;font:15px/1.6 system-ui}a{color:#67e8f9}img,video{display:block;max-width:100%;width:440px;margin:16px 0}section{margin:24px 0;padding:16px;border:1px solid #334155;border-radius:12px}</style>
+<h1>Downloads</h1><p>Open the Downloads toolbar panel. Each action below should add a separate entry there, with the correct filename and completion status.</p>
+<p>For each completed file, try Show in folder, Download again, and Delete file. Download again should keep the original and create a numbered copy. Delete file should move only that file to the Recycle Bin; its history entry should still offer Download again. Keep this page open when downloading generated files again.</p>
+<section><h2>Images</h2><p>Hover the image and use its bottom-right download button.</p><img src="./download-sample.svg" alt="AuraView sample image"></section>
+<section><h2>Videos</h2><p>Hover the video and use its top-right download button.</p><video controls preload="metadata" src="./download-sample.mp4"></video></section>
+<section><h2>Browser files</h2><p><a href="./download-check.txt" download="AuraView-download-check.txt">Download a text file</a></p><p><a id="blob-file" download="AuraView-generated-file.txt">Download a generated file</a></p><p>Repeat either download: existing files should receive numbered names.</p></section>
+<script>document.getElementById('blob-file').href=URL.createObjectURL(new Blob(['AuraView generated browser download.\n'],{type:'text/plain'}));</script>
+</html>

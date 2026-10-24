@@ -28,15 +28,57 @@ Modern browsers like Chrome and Edge frequently consume **1 GB to 3+ GB of RAM**
   - **Ollama API** (`:11434`)
   - **Pinokio** (`:42000`)
   - Quick custom port launcher (`:8000`, `:5000`, etc.)
+  Right-click the AI Dock for **Add port…**, or right-click an entry for **Edit entry…** and
+  **Delete entry**. The editor supports a name, localhost port, optional description, and dot color
+  from presets or a custom color picker. Changes, including removal of default entries, persist
+  across restarts. Drag Dock entries left or right to reorder them; the order is saved too.
 - 🪟 **Side-by-Side Split View:** Compare pages side-by-side (`Ctrl + \`).
 - **Image downloader:** Hover over a loaded image to reveal a small download button in its
   bottom-right corner. Click to save the original image to the Windows Downloads folder. Existing
   filenames receive a numbered suffix. The button shows a check mark when saved or a retry hint on
   failure. Works with linked, responsive, generated blob/data images, single CSS backgrounds, and
   embedded frames, including split tabs.
+  The button appears only on images displayed at least 120 × 120 pixels in size.
 - **Video downloader:** Hover overa loaded video to reveal a download button in its
   top-right corner. Paused videos, transparent player covers, embedded frames, split panes, and player fullscreen are supported. Click to download; click again during a download to cancel.
+  Instagram story videos resolve through the open tab's login, including stories opened from Home
+  with only an account URL. Downloads match that player's media ID or poster to the selected story.
+  Image and video download overlays hide after three seconds without pointer movement, including
+  fullscreen playback, and reappear when the pointer moves. Keyboard-focused download actions stay visible.
+- **Downloads:** The Downloads toolbar panel lists images, videos, and browser file downloads
+  together for the current app session, with progress and completion status. Active files can be
+  cancelled; interrupted files can be resumed when the browser supports it. Image failures can be
+  retried from the image's download button. The toolbar button fills green with combined download
+  progress and shows a green check for five seconds after completion. Hover to preview history;
+  click to pin it open, and click again to close. Hover previews overlay the page without resizing
+  it; the pinned history resizes the page area.
+  Active transfers show their average speed and an approximate time remaining when the size is
+  known. Estimates appear after progress can be measured and clear during merging, saving, or a stall.
+  Completed downloads have **Show in folder**, **Download again** (a numbered new copy), and
+  **Delete file** (Recycle Bin) actions. Deleted entries
+  stay in history for downloading again; generated files may need their original page kept open.
+  Checks: `http://localhost:1420/tests/fixtures/downloads.html`.
+- **Toolbar visibility:** The bookmarks bar and AI Dock independently remember whether they are
+  shown or hidden across app restarts, including AI Dock changes made with its keyboard shortcut.
+  Clearing browser history, cookies, or login sessions preserves these preferences.
+- **Settings and history:** Click the gear to the right of **Split**. **History** opens a searchable
+  page of visited URLs and titles, newest first, with local date/time stamps and older/newer pages.
+  **Clear browser history** removes visited URLs and native download records plus completed entries
+  in Downloads; cookies, logins, downloaded files, and active transfers are kept. **Clear cookies**
+  removes cookies and reloads open pages, which may sign you out. **Clear login sessions** also
+  removes website storage and clears open pages' session storage before reloading; bookmarks and
+  AI Dock entries are backed up and restored. Cleanup buttons turn green for five seconds after
+  successful completion. **Keep URL history** is saved across restarts. Turning it off removes
+  existing URL history and clears new visits after navigation, on startup, and before normal exit.
+  This uses WebView2's history-clearing API; visits can briefly reach disk before cleanup, and a
+  forced termination can leave records until the next startup. Cookies and logins remain enabled.
 - **Bookmarks:** Click the bookmark icon to the left of **AI Dock** to toggle the bookmarks bar.
+  Click a toolbar folder again to close it. Right-click a folder for **Delete folder**, which removes
+  that folder and its contained bookmarks and subfolders.
+  Right-click the bar for **Import bookmarks…** and **Export bookmarks…**. Import Chrome/Edge
+  bookmarks HTML files without replacing existing bookmarks; nested folders, ordering, and Unicode
+  titles are preserved. Exports use the same HTML format for importing into Chrome or Edge.
+  AuraView imports HTTP(S) links and reports skipped bookmarklets or browser-internal pages.
 - 🧠 **Smart Address Bar:** Intelligently identifies raw ports (`8188`), `localhost`, web URLs (`youtube.com`), or web search queries.
 - 🎬 **Hardware Video Playback:** Full support for HTML5 video, VP9, AV1, and YouTube media streaming.
 - ⌨️ **Productivity Hotkeys:**

@@ -7,6 +7,13 @@
   const pending = new Map();
   const states = new WeakMap();
   let host, button, icon, active, visibleImages, refreshTarget = false, frame = 0, lastX = -1, lastY = -1, leaving = false;
+  let pointerIdle = false, idleTimer = 0;
+  function clearIdleTimer() { clearTimeout(idleTimer); idleTimer = 0; }
+  function showTemporarily() {
+    pointerIdle = false;
+    clearIdleTimer();
+    idleTimer = setTimeout(() => { idleTimer = 0; pointerIdle = true; schedule(); }, 3000);
+  }
   const maxBytes = 100 * 1024 * 1024;
   const downloadPath = 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3';
 
@@ -26,6 +33,8 @@
     icon = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     svg.append(icon); button.append(svg); root.append(button); document.documentElement.append(host);
     button.addEventListener('pointerdown', (event) => { event.preventDefault(); event.stopImmediatePropagation(); });
+    button.addEventListener('focus', () => schedule());
+    button.addEventListener('blur', () => schedule());
     button.addEventListener('click', (event) => {
       event.preventDefault(); event.stopImmediatePropagation();
       if (!event.isTrusted || !active || !active.element.isConnected) return;
@@ -177,7 +186,7 @@
 
   function imageForElement(hit) {
     if (hit instanceof HTMLImageElement) {
-      if (!hit.complete || !hit.naturalWidth) return;
+      if (!hit.complete || !hit.naturalWidth || !meetsMinimumImageSize(hit)) return;
       const url = hit.currentSrc || hit.src;
       if (/^(https?|data|blob|file):/i.test(url)) return { element: hit, url };
       return;
@@ -186,7 +195,7 @@
     if (hit instanceof Element && hit !== document.body && hit !== document.documentElement) {
       const background = getComputedStyle(hit).backgroundImage;
       const match = /^url\(["']?(.*?)["']?\)$/.exec(background);
-      if (match && /^(https?|data|blob|file):/i.test(match[1])) {
+      if (match && /^(https?|data|blob|file):/i.test(match[1]) && meetsMinimumImageSize(hit)) {
         // Carousel arrows commonly use CSS sprite sheets. Keep these controls
         // clickable rather than offering to download the whole icon atlas.
         for (let node = hit; node instanceof Element; node = parentOf(node)) {
@@ -195,6 +204,13 @@
         return { element: hit, url: match[1] };
       }
     }
+  }
+
+  function meetsMinimumImageSize(element) {
+    // Use the displayed size: a high-resolution avatar rendered as a small
+    // icon should not get a download overlay. Viewport clipping is separate.
+    const { width, height } = element.getBoundingClientRect();
+    return width >= 120 && height >= 120;
   }
 
   function visibleRect(element) {
@@ -222,7 +238,8 @@
   function render() {
     mount();
     if (!button) return;
-    if (!active?.element.isConnected || leaving || document.hidden) { button.style.display = 'none'; return; }
+    if (!active?.element.isConnected || leaving || document.hidden
+      || (pointerIdle && !button.matches?.(':focus-visible'))) { button.style.display = 'none'; return; }
     active = imageForElement(active.element);
     if (!active || !isVisibleAtPointer(active.element)) { button.style.display = 'none'; return; }
     const rect = visibleRect(active.element);
@@ -256,6 +273,8 @@
   function fail(id, message) {
     const image = pending.get(id);
     if (!image) return;
+    try { send(stringify({ kind: 'auraview-image-failed', token, id, url: image.url,
+      message: message || 'Could not save image. Use its download button to retry.' })); } catch { /* bridge unavailable */ }
     pending.delete(id);
     if (states.get(image.element)?.id === id) states.set(image.element,
       { id, url: image.url, status: 'error', title: message || 'Could not save image. Click to retry.' });
@@ -297,10 +316,11 @@
 
   window.addEventListener('pointermove', (event) => {
     if (!event.isTrusted || event.pointerType === 'touch') return;
+    if (lastX !== event.clientX || lastY !== event.clientY) showTemporarily();
     lastX = event.clientX; lastY = event.clientY;
     active = imageAtPointer(event); schedule();
   }, { capture: true, passive: true });
-  function hide() { active = undefined; lastX = lastY = -1; schedule(); }
+  function hide() { clearIdleTimer(); pointerIdle = true; active = undefined; lastX = lastY = -1; schedule(); }
   document.addEventListener('scroll', () => schedule(true), { capture: true, passive: true });
   document.addEventListener('load', () => schedule(true), true);
   document.addEventListener('pointerleave', hide);
@@ -310,7 +330,7 @@
   window.addEventListener('resize', () => schedule(true));
   window.addEventListener('auraview-image-result', (event) => result({ ...event.detail, kind: 'auraview-image-result' }));
   window.addEventListener('message', (event) => { if (event.source === window.parent && window.parent !== window) result(event.data); });
-  window.addEventListener('pagehide', () => { leaving = true; cancelAnimationFrame(frame); frame = 0; pending.clear(); if (button) button.style.display = 'none'; });
+  window.addEventListener('pagehide', () => { leaving = true; clearIdleTimer(); pointerIdle = true; lastX = lastY = -1; cancelAnimationFrame(frame); frame = 0; pending.clear(); if (button) button.style.display = 'none'; });
   window.addEventListener('pageshow', () => { leaving = false; active = undefined; schedule(); });
   document.addEventListener('DOMContentLoaded', mount, { once: true });
   mount();

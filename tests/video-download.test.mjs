@@ -2,12 +2,14 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import vm from 'node:vm';
+import { fakeClock } from './fixtures/fake-clock.mjs';
 
 const source = readFileSync(new URL('../src-tauri/src/video-download.js', import.meta.url), 'utf8')
   .replace('__AURAVIEW_VIDEO_TOKEN__', '"private-video-token"')
   .replace('__AURAVIEW_MEDIA_STREAMS__', readFileSync(new URL('../src-tauri/src/video-streams.js', import.meta.url), 'utf8'));
 
 function page(href = 'https://example.com/feed') {
+  const clock = fakeClock();
   const messages = [], created = [], frames = new Map(), observers = [];
   let hit, serial = 0, frame = 0;
   const events = (target) => {
@@ -36,7 +38,7 @@ function page(href = 'https://example.com/feed') {
     closest(selector) { for (let node = this; node; node = node.parentElement) if (selector === '#movie_player' ? node.attrs.id === 'movie_player' : selector === '.ad-showing' && node.attrs.class === 'ad-showing') return node; }
     getBoundingClientRect() { return { ...this.bounds, width: this.bounds.right - this.bounds.left, height: this.bounds.bottom - this.bounds.top }; }
     matches(selector) { return selector.split(',').some((s) => s === this.tagName.toLowerCase() || s === '*' || (s === ':popover-open' && this.open) ||
-      (s === 'a[href]' && this.tagName === 'A' && this.href) || (s === '[role="dialog"]' && this.attrs.role === 'dialog') || (s === '[aria-modal="true"]' && this.attrs['aria-modal'] === 'true')); }
+      (s === ':focus-visible' && this.focusVisible) || (s === 'a[href]' && this.tagName === 'A' && this.href) || (s === '[role="dialog"]' && this.attrs.role === 'dialog') || (s === '[aria-modal="true"]' && this.attrs['aria-modal'] === 'true')); }
     querySelectorAll(selector) { return this.children.flatMap((c) => [...(c.matches(selector) ? [c] : []), ...c.querySelectorAll(selector)]); }
     attachShadow() { this.shadow = new Element('shadow'); this.shadow.host = this; return this.shadow; }
     getRootNode() { return this.host ? this : document; }
@@ -57,12 +59,15 @@ function page(href = 'https://example.com/feed') {
   class MutationObserver { constructor(fn) { this.callback = fn; observers.push(this); } observe() {} }
   vm.runInNewContext(source, { window, document, location, URL, Element, HTMLVideoElement: Video, MutationObserver,
     innerWidth: 900, innerHeight: 700,
+    setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
     crypto: { randomUUID: () => `request-${++serial}` },
     getComputedStyle: (node) => ({ display: 'block', visibility: 'visible', opacity: '1', overflowX: 'visible', overflowY: 'visible', backgroundColor: 'rgba(0,0,0,0)', ...node.style }),
     requestAnimationFrame: (fn) => { frames.set(++frame, fn); return frame; }, cancelAnimationFrame: (id) => frames.delete(id),
   });
   const button = created.find((e) => e.tagName === 'BUTTON'), host = created.find((e) => e.tagName === 'AURAVIEW-VIDEO-TOOLS');
-  const h = { window, document, location, messages, button, host, Element, Video,
+  const badge = created.find((e) => e.tagName === 'SPAN');
+  const h = { window, document, location, messages, button, badge, host, Element, Video, clock,
+    advance(ms) { clock.advance(ms); h.flush(); },
     flush() { for (const [id, fn] of frames) { frames.delete(id); fn(); } },
     add(node, container = body) { container.append(node); observers[0].callback([{ target: container, addedNodes: [node] }]); h.flush(); return node; },
     video(url, container) { return h.add(new Video(url), container); },
@@ -83,6 +88,48 @@ test('the top-right button targets a paused video and trusted clicks only', () =
   const event = h.click(); assert.equal(event.prevented, true); assert.equal(event.stopped, true);
   assert.equal(h.messages[0].url, v.currentSrc); assert.equal(h.messages[0].token, 'private-video-token');
   h.hover(new h.Element('p')); assert.equal(h.button.style.display, 'none');
+});
+
+test('video overlays hide after three idle seconds and only real pointer movement restarts the deadline', () => {
+  const h = page(), v = h.video();
+  h.hover(v); h.advance(2999); assert.equal(h.button.style.display, 'block');
+  h.advance(1); assert.equal(h.button.style.display, 'none');
+  h.hover(v); assert.equal(h.button.style.display, 'none', 'same-coordinate pointer events do not wake the overlay');
+  h.hover(v, 301, 180); assert.equal(h.button.style.display, 'block');
+  h.advance(2000); h.hover(v, 302, 180); h.advance(1000);
+  assert.equal(h.button.style.display, 'block', 'moving restarts the full three-second interval');
+  assert.equal(h.clock.pending, 1, 'pointer movements replace the old timer');
+  h.advance(2000); assert.equal(h.button.style.display, 'none');
+});
+
+test('fullscreen, player mutations, and download progress cannot resurrect an idle video button or badge', () => {
+  const h = page('https://www.youtube.com/watch?v=selected'), v = h.video();
+  h.hover(v); h.click(); h.result('request-1', 'downloading', { percent: 20 });
+  assert.equal(h.badge.style.display, 'block');
+  h.advance(3000); assert.equal(h.button.style.display, 'none'); assert.equal(h.badge.style.display, 'none');
+  h.document.fire('fullscreenchange'); h.recheck();
+  h.result('request-1', 'downloading', { percent: 50 });
+  assert.equal(h.button.style.display, 'none'); assert.equal(h.badge.style.display, 'none');
+  h.hover(v, 301, 180); assert.equal(h.button.style.display, 'block'); assert.equal(h.badge.textContent, '50%');
+  h.click(); assert.equal(h.messages.at(-1).kind, 'auraview-video-cancel', 'idle hiding preserves the active download');
+  h.window.fire('pagehide'); assert.equal(h.clock.pending, 0);
+  h.window.fire('pageshow'); h.flush(); assert.equal(h.button.style.display, 'none');
+  h.hover(v, 301, 180); assert.equal(h.button.style.display, 'block');
+});
+
+test('keyboard focus on the download action remains usable while ordinary mouse focus still times out', () => {
+  const h = page(), v = h.video();
+  h.hover(v); h.button.fire('focus'); h.advance(3000);
+  assert.equal(h.button.style.display, 'none', 'mouse focus must not keep the fullscreen overlay visible');
+  v.focusVisible = true;
+  h.document.fire('focusin', { target: v }); h.flush();
+  assert.equal(h.button.style.display, 'block', 'keyboard navigation can expose the download action');
+  h.button.focusVisible = true; h.button.fire('focus'); h.advance(3000);
+  assert.equal(h.button.style.display, 'block', 'retain the action while it has a keyboard focus ring');
+  h.button.focusVisible = false; h.button.fire('blur'); h.flush();
+  assert.equal(h.button.style.display, 'none');
+  h.hover(v, 301, 180); h.window.fire('blur'); h.flush();
+  assert.equal(h.clock.pending, 0); assert.equal(h.button.style.display, 'none');
 });
 test('in-flight clicks cancel rather than starting another download; failures can retry', () => {
   const h = page(), v = h.video(); h.hover(v); h.click();
@@ -134,6 +181,83 @@ test('Instagram p and reel links for the same home post are not ambiguous', () =
   h.link('https://www.instagram.com/reels/audio/123456789/', post);
   h.hover(v); h.click(); assert.equal(h.messages[0].pageUrl, 'https://www.instagram.com/p/SELECTED/');
 });
+test('Instagram story videos resolve the selected numeric story ID', () => {
+  const h = page('https://www.instagram.com/stories/distrokid/3994261805935619921/?utm_source=test');
+  const v = h.video('blob:https://www.instagram.com/story');
+  h.hover(v); h.click();
+  assert.equal(h.messages[0].pageUrl, 'https://www.instagram.com/stories/distrokid/3994261805935619921/');
+});
+
+test('Home streaming stories send only the owning player poster and recycled players reset their download identity', () => {
+  const h = page('https://www.instagram.com/stories/creator/');
+  const v = h.video('blob:https://www.instagram.com/playing');
+  const metadata = { poster: { uri: 'https://scontent.cdninstagram.com/selected.jpg?signature=one' }, videoFBID: '3994261805935619921' };
+  v.__reactFiber$test = { memoizedProps: {}, return: { memoizedProps: { coreVideoPlayerMetaData: metadata }, return: {
+    memoizedProps: { coreVideoPlayerMetaData: { poster: 'https://scontent.cdninstagram.com/neighbor.jpg' } },
+  } } };
+  h.hover(v); h.click();
+  assert.equal(h.messages[0].poster, metadata.poster.uri);
+  assert.equal(h.messages[0].instagramVideoId, metadata.videoFBID);
+  assert.equal(h.messages[0].pageUrl, '', 'account collection must not be passed to the permalink extractor');
+  metadata.poster.uri = 'https://scontent.cdninstagram.com/next.jpg';
+  h.recheck(); h.click();
+  assert.equal(h.messages[1].kind, 'auraview-video-download', 'next story must not cancel the previous story job');
+  assert.equal(h.messages[1].poster, metadata.poster.uri);
+  metadata.poster = null;
+  h.recheck(); h.click();
+  assert.equal(h.messages[2].poster, '', 'missing current poster must not borrow metadata from a higher component');
+});
+
+test('Home account story routes never download an embedded reshared Reel as the story', () => {
+  const h = page('https://www.instagram.com/stories/creator/'), box = h.add(new h.Element());
+  const v = h.video('blob:https://www.instagram.com/playing', box);
+  h.link('https://www.instagram.com/reel/reshared/', box);
+  v.__reactFiber$test = { memoizedProps: { coreVideoPlayerMetaData: { videoFBID: '3994261805935619921' } } };
+  h.hover(v); h.click();
+  assert.equal(h.messages[0].pageUrl, '');
+  assert.equal(h.messages[0].instagramVideoId, '3994261805935619921');
+});
+
+test('the current story takes precedence over a reshared Reel link and follows story navigation', () => {
+  const h = page('https://www.instagram.com/stories/creator/3994261805935619921/'), box = h.add(new h.Element());
+  const v = h.video('blob:https://www.instagram.com/story', box);
+  h.link('https://www.instagram.com/reel/RESHARED/', box);
+  h.hover(v); h.click();
+  assert.equal(h.messages[0].pageUrl, h.location.href);
+  h.result('request-1', 'saved');
+  h.location.href = 'https://www.instagram.com/stories/creator/3994261805935619922/';
+  h.recheck();
+  assert.equal(h.button.title, 'Download video');
+  h.click(); assert.equal(h.messages[1].pageUrl, h.location.href);
+  assert.equal(h.messages[1].kind, 'auraview-video-download');
+});
+
+test('preloaded neighboring story players cannot inherit the active story route', () => {
+  const h = page('https://www.instagram.com/stories/creator/3994261805935619921/');
+  const viewer = h.add(new h.Element()), v = h.video('blob:https://www.instagram.com/current', viewer);
+  const next = h.video('blob:https://www.instagram.com/next', viewer);
+  next.bounds = { left: 600, right: 750, top: 100, bottom: 250 };
+  h.hover(v); h.click(); assert.equal(h.messages[0].pageUrl, h.location.href);
+  h.hover(next, 650, 180); h.click(); assert.equal(h.messages[1].pageUrl, '');
+});
+
+test('story links are identified by story ID rather than the account name', () => {
+  const h = page('https://www.instagram.com/'), box = h.add(new h.Element());
+  const v = h.video('blob:https://www.instagram.com/story', box);
+  h.link('https://www.instagram.com/stories/creator/3994261805935619921/', box);
+  h.hover(v); h.click(); assert.equal(h.messages[0].pageUrl, 'https://www.instagram.com/stories/creator/3994261805935619921/');
+  h.result('request-1', 'saved');
+  h.link('https://www.instagram.com/stories/creator/3994261805935619922/', box);
+  h.hover(v); h.click(); assert.equal(h.messages[1].pageUrl, '', 'different stories by the same account are ambiguous');
+});
+
+test('account story collections and highlights never identify one selected story video', () => {
+  for (const path of ['stories/creator/', 'stories/highlights/18090946048123978/', 'stories/creator/not-a-number/']) {
+    const h = page(`https://www.instagram.com/${path}`), v = h.video('blob:https://www.instagram.com/story');
+    h.hover(v); h.click(); assert.equal(h.messages[0].pageUrl, '');
+  }
+});
+
 test('recycled feed players do not carry progress or completion into their next video', () => {
   const h = page(), v = h.video(); h.hover(v); h.click();
   v.src = v.currentSrc = 'https://cdn.example.com/second.mp4'; h.hover(v);
@@ -167,6 +291,90 @@ test('YouTube watch and Shorts URLs resolve only the current video, without a pl
   for (const url of ['https://www.youtube.com/watch?v=selected&list=mix', 'https://www.youtube.com/shorts/selected']) {
     const h = page(url), v = h.video('blob:https://www.youtube.com/stream'); h.hover(v); h.click();
     assert.equal(h.messages[0].pageUrl, 'https://www.youtube.com/watch?v=selected');
+  }
+});
+
+test('watch pages keep the main streaming video identifiable after an advertisement leaves another player behind', () => {
+  for (const url of ['https://www.pornhub.com/view_video.php?viewkey=6aac4f929c636',
+    'https://www.xvideos.com/video.ucufvldcccf/example_title']) {
+    const h = page(url), box = h.add(new h.Element());
+    const main = h.video('https://cdn.example/advertisement.mp4', box);
+    const other = h.video('https://cdn.example/other-player.mp4');
+    other.bounds = { left: 600, right: 750, top: 100, bottom: 180 };
+    h.hover(main); h.click();
+    assert.equal(h.messages[0].url, 'https://cdn.example/advertisement.mp4', 'direct ad download remains available');
+    h.result('request-1', 'saved');
+    main.currentSrc = main.src = `blob:${new URL(url).origin}/main-video`;
+    h.recheck(); h.hover(main); h.click();
+    assert.equal(h.messages[1].pageUrl, url);
+    assert.equal(h.messages[1].streamOnly, false);
+    h.hover(other, 650, 140); h.click();
+    assert.equal(h.messages[2].pageUrl, '', 'secondary players must not inherit the main watch URL');
+  }
+});
+
+test('recognized watch routes override recommendations inside the main player but preserve only the selected ID', () => {
+  const cases = [
+    ['https://www.pornhub.com/view_video.php?viewkey=selected123&tracking=test#player',
+      'https://www.pornhub.com/view_video.php?viewkey=selected123', 'https://www.pornhub.com/view_video.php?viewkey=neighbor456'],
+    ['https://www.xvideos.com/video.abc123/example_title?tracking=test#player',
+      'https://www.xvideos.com/video.abc123/example_title', 'https://www.xvideos.com/video.def456/neighbor'],
+  ];
+  for (const [url, expected, recommendation] of cases) {
+    const h = page(url), box = h.add(new h.Element());
+    const v = h.video(`blob:${new URL(url).origin}/main`, box);
+    h.link(recommendation, box);
+    h.hover(v); h.click();
+    assert.equal(h.messages[0].pageUrl, expected);
+  }
+});
+
+test('a retained ad directly underneath the main watch player cannot hide its watch-page identity', () => {
+  for (const url of ['https://www.pornhub.com/view_video.php?viewkey=selected123',
+    'https://www.xvideos.com/video.abc123/example_title']) {
+    const h = page(url);
+    const oldAd = h.video('https://cdn.example/advertisement.mp4');
+    const main = h.video(`blob:${new URL(url).origin}/main`);
+    h.document.elementsFromPoint = () => [main, oldAd];
+    h.hover(main); h.click();
+    assert.equal(h.messages[0].pageUrl, url);
+    h.result('request-1', 'saved');
+    h.hover(h.host, 470, 115); h.recheck(); h.click();
+    assert.equal(h.messages[1].pageUrl, url, 'moving onto the download button retains the selected player');
+    h.result('request-2', 'saved');
+    h.document.elementsFromPoint = () => [oldAd, main];
+    h.hover(main); h.click();
+    assert.equal(h.messages[2].pageUrl, '', 'a covered player cannot claim the main route');
+  }
+});
+
+test('watch recognition leaves ambiguous players, listings, and lookalike domains unidentified', () => {
+  for (const url of ['https://www.pornhub.com/view_video.php?viewkey=selected123',
+    'https://www.xvideos.com/video.abc123/example_title', 'https://www.pornhub.com/',
+    'https://www.xvideos.com/', 'https://pornhub.com.evil.example/view_video.php?viewkey=selected123',
+    'https://notxvideos.com/video.abc123/example_title']) {
+    const h = page(url), a = h.video(`blob:${new URL(url).origin}/a`);
+    const b = h.video(`blob:${new URL(url).origin}/b`);
+    b.bounds = { left: 500, right: 900, top: 100, bottom: 325 };
+    h.hover(a); h.click();
+    assert.equal(h.messages[0].pageUrl, '');
+  }
+});
+
+test('watch URL aliases preserve the exact media ID while rejecting malformed IDs', () => {
+  for (const [url, expected] of [
+    ['https://www.pornhub.com/embed/abc123/', 'https://www.pornhub.com/view_video.php?viewkey=abc123'],
+    ['https://www.pornhub.com/video/show?viewkey=abc123&ref=test', 'https://www.pornhub.com/view_video.php?viewkey=abc123'],
+    ['https://www.xvideos.com/video12345/example_title?ref=test', 'https://www.xvideos.com/video12345/example_title'],
+    ['https://www.pornhub.com/view_video.php?viewkey=one&viewkey=two', ''],
+    ['https://www.pornhub.com/view_video.php?viewkey=bad%2Fid', ''],
+    ['https://www.xvideos.com/videos/abc123', ''],
+  ]) {
+    const h = page(url), main = h.video(`blob:${new URL(url).origin}/main`);
+    const other = h.video('https://cdn.example/other.mp4');
+    other.bounds = { left: 600, right: 750, top: 100, bottom: 180 };
+    h.hover(main); h.click();
+    assert.equal(h.messages[0].pageUrl, expected);
   }
 });
 test('YouTube end-screen links do not change the main download, and ads never inherit its watch URL', () => {

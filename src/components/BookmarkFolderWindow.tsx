@@ -28,9 +28,13 @@ export function BookmarkFolderWindow() {
           { id: `open:${id}`, label: 'Open' }, { id: `newtab:${id}`, label: 'Open in new tab' },
           { id: `edit:${id}`, label: 'Edit bookmark…' }, { id: `delete:${id}`, label: 'Delete bookmark' },
         ] }).catch(() => setError('Unable to open bookmark actions.'));
-      }} onMove={(id, index) => {
+      }} onFolderContext={(id, x, y) => {
+        void invoke('show_bookmark_menu', { x, y, items: [
+          { id: `add:${id}`, label: 'Add current page…' }, { id: `delete-folder:${id}`, label: 'Delete folder' },
+        ] }).catch(() => setError('Unable to open folder actions.'));
+      }} onMove={(id, index, selectedFolder) => {
         try {
-          const next = moveBookmarkItem(data, id, index, folderId);
+          const next = moveBookmarkItem(data, id, index, selectedFolder || folderId);
           if (next === data) return;
           saveBookmarks(window.localStorage, next);
           setData(next);

@@ -38,6 +38,10 @@ struct Request {
     #[serde(default)]
     page_url: String,
     #[serde(default)]
+    poster: String,
+    #[serde(default)]
+    instagram_video_id: String,
+    #[serde(default)]
     title: String,
     #[serde(default)]
     streams: Vec<StreamHint>,
@@ -117,6 +121,13 @@ impl Task {
         self.emit(app, &payload);
     }
     fn emit(&self, app: &AppHandle, payload: &Progress) {
+        let mut entry = crate::downloads::Entry::new("video", &payload.id, &payload.title);
+        entry.status = payload.status.clone(); entry.message = payload.message.clone();
+        entry.downloaded = payload.downloaded; entry.total = payload.total;
+        entry.percent = payload.percent; entry.filename = payload.filename.clone();
+        entry.cancelable = busy(&payload.status);
+        entry.retryable = matches!(payload.status.as_str(), "error" | "cancelled");
+        crate::downloads::publish(app, entry);
         let _ = app.emit_to("main", "video-download-progress", payload);
         if let Some(view) = app.get_webview(&self.label) {
             let _ = view.eval(&format!(
@@ -164,6 +175,9 @@ fn validate(request: &Request, source: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-');
     if !valid_id
         || request.title.len() > 1024
+        || (!request.poster.is_empty() && http_url(&request.poster).is_none())
+        || request.instagram_video_id.len() > 40
+        || !request.instagram_video_id.bytes().all(|b| b.is_ascii_digit())
         || request.streams.len() > 8
         || request.streams.iter().any(|hint| {
             http_url(&hint.url).is_none()
@@ -233,6 +247,9 @@ pub fn retry_video_download(
     }
     let view = app
         .get_webview(&task.label)
+        .or_else(|| if !task.request.page_url.is_empty() {
+            app.webviews().into_iter().find(|(label, _)| label.starts_with("browser-")).map(|(_, view)| view)
+        } else { None })
         .ok_or("Reopen the video’s page and use its download button")?;
     let mut request = task.request.clone();
     request.id = crate::image_download::token();
@@ -269,7 +286,7 @@ fn start(app: AppHandle, view: tauri::Webview, request: Request, source: String)
             return;
         }
         if registry.len() >= 60 {
-            registry.retain(|_, t| busy(&t.progress.lock().unwrap().status));
+            registry.retain(|id, t| busy(&t.progress.lock().unwrap().status) || crate::downloads::contains(&format!("video:{id}")));
         }
         let active = registry
             .values()
@@ -293,6 +310,7 @@ fn start(app: AppHandle, view: tauri::Webview, request: Request, source: String)
         let result = download(&app, &view, &task).await;
         match result {
             Ok(path) => {
+                crate::downloads::remember("video", &task.request.id, &path, crate::downloads::Replay::Video(task.request.id.clone()));
                 task.progress.lock().unwrap().filename =
                     path.file_name().map(|n| n.to_string_lossy().into_owned());
                 task.update(&app, "saved", "Saved to Downloads", 0, None);
@@ -440,7 +458,8 @@ async fn download(
                 let audio = probe_video(&tools, &file_copy, &task_copy)?;
                 // A streaming player may expose a video-only MP4. Resolve its
                 // permalink to retrieve audio rather than silently saving that track.
-                if !audio && !task_copy.request.page_url.is_empty() {
+                if !audio && (!task_copy.request.page_url.is_empty()
+                    || instagram_story_target(&task_copy.source).is_some()) {
                     return Err("Resolve separate audio".into());
                 }
                 task_copy.update(&app_copy, "saving", "Saving video…", 0, None);
@@ -461,11 +480,16 @@ async fn download(
         }
         task.check()?;
     }
+    task.update(app, "preparing", "Resolving video and audio…", 0, None);
+    // Story playback can be authenticated even when Instagram rejects the
+    // external extractor's webpage lookup. Resolve that exact story in its tab.
+    let story = instagram_story(view, task).await.ok();
+    task.check()?;
     let url = if !task.request.page_url.is_empty() && !task.request.stream_only {
         Some(task.request.page_url.clone())
     } else if http_url(&task.request.url).is_some() {
         Some(task.request.url.clone())
-    } else if !task.request.streams.is_empty() {
+    } else if !task.request.streams.is_empty() || story.is_some() {
         None
     } else {
         return Err(
@@ -473,7 +497,6 @@ async fn download(
                 .into(),
         );
     };
-    task.update(app, "preparing", "Resolving video and audio…", 0, None);
     let cookie_urls: Vec<_> = [&task.source, &task.request.page_url, &task.request.url]
         .into_iter()
         .chain(task.request.streams.iter().map(|hint| &hint.url))
@@ -500,6 +523,7 @@ async fn download(
             url.as_deref(),
             &cookies_path,
             &user_agent,
+            story,
         )
     })
     .await
@@ -536,6 +560,84 @@ async fn frame(view: &tauri::Webview, source: &str) -> Result<String, String> {
     let tree = devtools(view, "Page.getFrameTree", json!({})).await?;
     frame_for_source(&tree["frameTree"], source)
         .ok_or("The video’s frame has navigated away".into())
+}
+
+fn instagram_story_target(url: &str) -> Option<(String, Option<String>)> {
+    let url = http_url(url)?;
+    if !matches!(url.host_str()?, "instagram.com" | "www.instagram.com") {
+        return None;
+    }
+    let parts: Vec<_> = url.path().trim_end_matches('/').split('/').collect();
+    if !matches!(parts.len(), 3 | 4)
+        || parts[1] != "stories"
+        || parts[2].eq_ignore_ascii_case("highlights")
+        || parts[2].is_empty()
+        || !parts[2].bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.'))
+        || (parts.len() == 4 && (parts[3].is_empty() || !parts[3].bytes().all(|b| b.is_ascii_digit())))
+    {
+        return None;
+    }
+    Some((parts[2].into(), parts.get(3).map(|id| id.to_string())))
+}
+
+#[cfg(windows)]
+async fn instagram_story(view: &tauri::Webview, task: &Task) -> Result<Value, String> {
+    let (username, id) = instagram_story_target(&task.request.page_url)
+        .or_else(|| instagram_story_target(&task.source))
+        .ok_or("Not an Instagram story")?;
+    let frame = frame(view, &task.source).await?;
+    task.check()?;
+    let world = devtools(
+        view, "Page.createIsolatedWorld",
+        json!({"frameId": frame, "worldName": "AuraView story downloads"}),
+    ).await?;
+    let context = world["executionContextId"].as_u64()
+        .ok_or("Story frame is no longer available")?;
+    let expression = format!(
+        "({})({})", include_str!("instagram-story.js"),
+        json!({"storyId": id, "username": username, "poster": task.request.poster, "mediaUrl": task.request.url,
+            "playerId": task.request.instagram_video_id}),
+    );
+    let response = devtools(
+        view, "Runtime.evaluate", json!({"contextId": context,
+        "expression": expression, "awaitPromise": true, "returnByValue": true}),
+    ).await?;
+    task.check()?;
+    if !response["exceptionDetails"].is_null() {
+        return Err("Unable to resolve the story in this session".into());
+    }
+    let mut info = instagram_story_metadata(&task.request, id.as_deref(), &response["result"]["value"])?;
+    info["webpage_url"] = json!(format!(
+        "https://www.instagram.com/stories/{username}/{}/", info["id"].as_str().unwrap()
+    ));
+    Ok(info)
+}
+
+fn instagram_story_metadata(
+    request: &Request, expected: Option<&str>, item: &Value,
+) -> Result<Value, String> {
+    let id = item["id"].as_str()
+        .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+        .ok_or("The story response did not identify the selected story")?;
+    if expected.is_some_and(|expected| id != expected) {
+        return Err("The story response did not match the selected story".into());
+    }
+    let formats: Vec<_> = item["video_versions"].as_array().into_iter().flatten().enumerate()
+        .filter_map(|(index, version)| {
+            let url = http_url(version["url"].as_str()?)?;
+            Some(json!({"format_id": format!("story-{index}"), "url": url.as_str(),
+                "width": version["width"].as_u64(), "height": version["height"].as_u64(),
+                "ext": "mp4", "vcodec": "unknown",
+                "acodec": if item["has_audio"] == false {"none"} else {"unknown"}}))
+        })
+        .collect();
+    if formats.is_empty() {
+        return Err("No complete video was available for this story".into());
+    }
+    Ok(json!({"id": id, "title": request.title, "webpage_url": request.page_url,
+        "extractor": "AuraView Instagram story", "formats": formats,
+        "duration": item["video_duration"].as_f64(),
+        "http_headers": {"Referer": "https://www.instagram.com/"}}))
 }
 #[cfg(windows)]
 async fn direct_video(
@@ -824,8 +926,22 @@ fn extract_video(
     url: Option<&str>,
     cookies: &Path,
     agent: &str,
+    story: Option<Value>,
 ) -> Result<PathBuf, String> {
     let tools = tool_dir(app)?;
+    if let Some(info) = story {
+        let directory = work.0.join("story");
+        std::fs::create_dir(&directory).map_err(|e| e.to_string())?;
+        match extract_one(app, task, &tools, &directory, downloads, None, cookies, agent, Some(info)) {
+            Ok(path) => return Ok(path),
+            Err(error) => {
+                task.check()?;
+                if error.contains("protected") || error.contains("Live-stream") {
+                    return Err(error);
+                }
+            }
+        }
+    }
     let mut primary_error = None;
     if let Some(url) = url {
         let directory = work.0.join("primary");
@@ -1386,6 +1502,8 @@ mod tests {
                 id: "test-id".into(),
                 url: "https://cdn.example.com/movie.mp4".into(),
                 page_url: String::new(),
+                poster: String::new(),
+                instagram_video_id: String::new(),
                 title: "Video".into(),
                 streams: Vec::new(),
                 stream_only: false,
@@ -1406,6 +1524,29 @@ mod tests {
                 revision: 0,
             }),
         })
+    }
+    #[test]
+    fn instagram_stories_resolve_only_the_selected_video_and_keep_existing_routes_separate() {
+        let url = "https://www.instagram.com/stories/creator/3994261805935619921/?from=home";
+        let id = instagram_story_target(url).unwrap().1.unwrap();
+        assert_eq!(id, "3994261805935619921");
+        for url in ["https://www.instagram.com/reel/abc/", "https://www.instagram.com/",
+            "https://www.instagram.com/stories/highlights/123/",
+            "https://www.instagram.com/stories/creator/not-numeric/", "https://instagram.com.evil.example/stories/a/123/"] {
+            assert!(instagram_story_target(url).is_none());
+        }
+        let mut request = task().request.clone();
+        request.page_url = url.into();
+        let item = json!({"id": id, "video_duration": 15, "has_audio": true,
+            "video_versions": [{"url": "https://cdn.example/video.mp4", "width": 720, "height": 1280},
+            {"url": "file:///C:/private"}]});
+        assert_eq!(instagram_story_target("https://www.instagram.com/stories/creator/").unwrap(), ("creator".into(), None));
+        let info = instagram_story_metadata(&request, Some(&id), &item).unwrap();
+        assert_eq!(info["formats"].as_array().unwrap().len(), 1);
+        assert_eq!(info["formats"][0]["acodec"], "unknown");
+        assert_eq!(info["duration"], 15.0);
+        assert!(instagram_story_metadata(&request, Some("3994261805935619922"), &item).is_err());
+        assert!(instagram_story_metadata(&request, Some(&id), &json!({"id": id, "video_versions": []})).is_err());
     }
     #[test]
     fn requests_restrict_protocols_permalinks_and_native_job_identifiers() {

@@ -73,6 +73,10 @@ export function useBookmarkReorder(ref: RefObject<HTMLDivElement>, ids: string[]
   return { order: preview && drag.current?.signature === signature ? preview : ids, draggedId,
     onPointerDown: (event: PointerEvent, id: string) => {
       suppressClick.current = false;
+      // Nested action buttons (such as the Dock's new-tab button) keep their
+      // own clicks and must not start a drag of the surrounding item.
+      const actionButton = (event.target as Element)?.closest?.('button');
+      if (actionButton && actionButton !== event.currentTarget) return;
       if (event.button !== 0 || !event.isPrimary || !ref.current) return;
       drag.current = { id, pointer: event.pointerId, startX: event.clientX, startY: event.clientY, x: event.clientX, y: event.clientY,
         started: false, order: latest.current.ids, signature: JSON.stringify(latest.current.ids) };
