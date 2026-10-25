@@ -1,55 +1,58 @@
-name: Release AuraView
+name: Build and Release AuraView
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  release:
+  windows:
+    runs-on: windows-latest
     permissions:
       contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: 'windows-latest'
-            args: '--bundles nsis,msi'
-
-    runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: 'npm'
+          node-version: '22'
+          cache: npm
 
-      - name: Install Rust stable
+      - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Read release notes
-        id: release_notes
-        shell: pwsh
-        run: |
-          "body<<AURAVIEW_RELEASE_NOTES" >> $env:GITHUB_OUTPUT
-          Get-Content -Raw .github/RELEASE_NOTES.md >> $env:GITHUB_OUTPUT
-          "AURAVIEW_RELEASE_NOTES" >> $env:GITHUB_OUTPUT
+      - name: Build Windows EXE and MSI installers
+        run: npm run tauri -- build --bundles nsis,msi
 
-      - name: Build Tauri Desktop App
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload installers as workflow artifacts
+        uses: actions/upload-artifact@v4
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'AuraView v__VERSION__'
-          releaseBody: ${{ steps.release_notes.outputs.body }}
-          releaseDraft: false
-          prerelease: false
-          args: ${{ matrix.args }}
+          name: AuraView-Windows-installers
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub Release for version tags
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          $files = @(
+            Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe" | ForEach-Object FullName
+            Get-ChildItem "src-tauri/target/release/bundle/msi/*.msi" | ForEach-Object FullName
+          )
+          if ($files.Count -lt 2) { throw "Expected both EXE and MSI installers." }
+          gh release create "$env:TAG" $files --title "AuraView $env:TAG" --notes-file ".github/RELEASE_NOTES.md" --verify-tag
