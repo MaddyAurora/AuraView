@@ -8,7 +8,7 @@ test('tabs fit their measured title and controls, and the first linked page avoi
   assert.equal(naturalTabWidth(74.25, false), 147);
   assert.equal(naturalTabWidth(2000, false), MAX_TAB_WIDTH);
   assert.equal(naturalTabWidth(2000, true), MAX_TAB_WIDTH);
-  assert.equal(naturalTabWidth(0, true), MIN_TAB_WIDTH);
+  assert.equal(naturalTabWidth(0, true), 48);
   assert.equal(naturalTabWidth(40, false, true), 132);
   assert.equal(naturalTabWidth(40, true, true), 108);
 });
@@ -31,8 +31,8 @@ test('crowding lowers the largest widths first without stretching or prematurely
 });
 
 test('width fitting keeps a usable minimum when capacity is exhausted', () => {
-  assert.deepEqual(fitTabWidths([112, 176, 176, 90], 250), [80, 80, 80, 80]);
-  assert.deepEqual(fitTabWidths([112, 176], 0), [80, 80]);
+  assert.deepEqual(fitTabWidths([112, 176, 176, 90], 96), [24, 24, 24, 24]);
+  assert.deepEqual(fitTabWidths([112, 176], 0), [24, 24]);
   assert.deepEqual(fitTabWidths([10, 1000], 500), [MIN_TAB_WIDTH, MAX_TAB_WIDTH]);
 });
 

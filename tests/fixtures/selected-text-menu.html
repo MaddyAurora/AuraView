@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Selected text menu checks</title>
+<style>
+  body { margin: 32px; font: 16px system-ui; background: #f4f7fb; color: #162334; }
+  section { margin: 24px 0; padding: 20px; border: 1px solid #b8c5d6; background: white; }
+  button { padding: 8px 14px; }
+  p { padding: 20px 0; }
+  iframe { width: 100%; height: 190px; border: 1px solid #b8c5d6; }
+  [contenteditable] { min-height: 70px; padding: 12px; border: 1px solid #b8c5d6; }
+</style>
+<h1>Selected text menu checks</h1>
+<section>
+  <button onclick="const r=document.createRange();r.selectNodeContents(document.querySelector('#sample'));const s=getSelection();s.removeAllRanges();s.addRange(r)">Select sample text</button>
+  <p id="sample"><b>AuraView</b> selected text &amp; <i>plain text</i> 123</p>
+  <p>Right-click the selected sample. Verify all nine menu items, both search engines, and Send text to URL without navigation.</p>
+  <div contenteditable="true" aria-label="Paste check">Paste here to compare Copy with Copy as plain text.</div>
+</section>
+<iframe title="Framed selection" srcdoc="<body style='font:16px system-ui;padding:16px'><button onclick='const r=document.createRange();r.selectNodeContents(document.querySelector(&quot;p&quot;));const s=getSelection();s.removeAllRanges();s.addRange(r)'>Select frame text</button><p><b>Selected frame text</b> 456</p></body>"></iframe>
+</html>

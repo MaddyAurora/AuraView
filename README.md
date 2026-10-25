@@ -22,13 +22,13 @@ Modern browsers like Chrome and Edge frequently consume **1 GB to 3+ GB of RAM**
 
 ## ✨ Features
 
-- 🚀 **Local AI Hub:** Pre-configured 1-click dock for popular AI interfaces:
+- 🚀 **Local Hub:** Pre-configured 1-click dock for popular AI interfaces:
   - **ComfyUI** (`:8188`)
   - **Gradio / SD WebUI** (`:7860`)
   - **Ollama API** (`:11434`)
   - **Pinokio** (`:42000`)
   - Quick custom port launcher (`:8000`, `:5000`, etc.)
-  Right-click the AI Dock for **Add port…**, or right-click an entry for **Edit entry…** and
+  Right-click the Local Hub for **Add port…**, or right-click an entry for **Edit entry…** and
   **Delete entry**. The editor supports a name, localhost port, optional description, and dot color
   from presets or a custom color picker. Changes, including removal of default entries, persist
   across restarts. Drag Dock entries left or right to reorder them; the order is saved too.
@@ -58,8 +58,8 @@ Modern browsers like Chrome and Edge frequently consume **1 GB to 3+ GB of RAM**
   **Delete file** (Recycle Bin) actions. Deleted entries
   stay in history for downloading again; generated files may need their original page kept open.
   Checks: `http://localhost:1420/tests/fixtures/downloads.html`.
-- **Toolbar visibility:** The bookmarks bar and AI Dock independently remember whether they are
-  shown or hidden across app restarts, including AI Dock changes made with its keyboard shortcut.
+- **Toolbar visibility:** The bookmarks bar and Local Hub independently remember whether they are
+  shown or hidden across app restarts, including Local Hub changes made with its keyboard shortcut.
   Clearing browser history, cookies, or login sessions preserves these preferences.
 - **Built-in ad blocking:** Enabled by default, with a persistent **Ad blocking** switch in the
   gear Settings menu. Uses Brave's native Rust filtering engine with EasyList and EasyPrivacy to
@@ -86,12 +86,12 @@ Modern browsers like Chrome and Edge frequently consume **1 GB to 3+ GB of RAM**
   in Downloads; cookies, logins, downloaded files, and active transfers are kept. **Clear cookies**
   removes cookies and reloads open pages, which may sign you out. **Clear login sessions** also
   removes website storage and clears open pages' session storage before reloading; bookmarks and
-  AI Dock entries are backed up and restored. Cleanup buttons turn green for five seconds after
+  Local Hub entries are backed up and restored. Cleanup buttons turn green for five seconds after
   successful completion. **Keep URL history** is saved across restarts. Turning it off removes
   existing URL history and clears new visits after navigation, on startup, and before normal exit.
   This uses WebView2's history-clearing API; visits can briefly reach disk before cleanup, and a
   forced termination can leave records until the next startup. Cookies and logins remain enabled.
-- **Bookmarks:** Click the bookmark icon to the left of **AI Dock** to toggle the bookmarks bar.
+- **Bookmarks:** Click the bookmark icon to the left of **Local Hub** to toggle the bookmarks bar.
   Click a toolbar folder again to close it. Right-click a folder for **Delete folder**, which removes
   that folder and its contained bookmarks and subfolders.
   Right-click the bar for **Import bookmarks…** and **Export bookmarks…**. Import Chrome/Edge
@@ -113,7 +113,7 @@ Modern browsers like Chrome and Edge frequently consume **1 GB to 3+ GB of RAM**
   - `Ctrl + P`: Print; `Ctrl + S`: Save page using the native Save As dialog
   - `F11`: Toggle fullscreen; `F12`: Toggle the active page's developer tools
   - `Ctrl + \`: Toggle split-screen view
-  - `Ctrl + D`: Toggle Local AI Dock
+  - `Ctrl + D`: Toggle Local Hub
 
 Desktop shortcuts work from app controls and web content. Page commands use the last focused visible
 pane in split view. Closed tabs are remembered for this session (up to 20); reopening reloads their

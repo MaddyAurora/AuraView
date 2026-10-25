@@ -2,6 +2,7 @@ import { parse } from 'parse5';
 import type { DefaultTreeAdapterTypes } from 'parse5';
 import { bookmarkBarItems, bookmarkFolderItems, bookmarkUrl } from './bookmarks.ts';
 import type { BookmarkData } from './bookmarks.ts';
+import { faviconData } from './favicon.ts';
 
 type Node = DefaultTreeAdapterTypes.Node;
 type Element = DefaultTreeAdapterTypes.Element;
@@ -12,8 +13,8 @@ const text = (node: Node): string => node.nodeName === '#text' ? (node as Defaul
 
 export function importBookmarkHtml(html: string, existing: BookmarkData): { data: BookmarkData; added: number; skipped: number } {
   if (html.length > 10 * 1024 * 1024) throw new Error('This bookmarks file is too large (maximum 10 MB).');
-  // Parse into an inert tree. Imported scripts, event handlers, icons and markup
-  // never enter a live page; only folder text and validated HTTP(S) links survive.
+  // Parse into an inert tree. Only folder text, validated HTTP(S) links and
+  // bounded embedded image icons survive; scripts and markup stay inert.
   const document = parse(html);
   const lists: Element[] = [];
   const findLists = (node: Node) => {
@@ -59,7 +60,8 @@ export function importBookmarkHtml(html: string, existing: BookmarkData): { data
         let url: string;
         try { url = bookmarkUrl(href); } catch { skipped++; return; }
         const id = crypto.randomUUID();
-        data.bookmarks.push({ id, title: text(node).trim() || url, url, folderId: parentId });
+        const favicon = faviconData(attribute(node, 'icon'));
+        data.bookmarks.push({ id, title: text(node).trim() || url, url, folderId: parentId, ...(favicon ? { favicon } : {}) });
         order.push(id); added++; return;
       }
       if (['script', 'style', 'template', 'iframe'].includes(name)) return;
@@ -87,7 +89,8 @@ export function exportBookmarkHtml(data: BookmarkData): string {
       const pad = '    '.repeat(depth);
       if (item.kind === 'bookmark') {
         const url = bookmarkUrl(item.bookmark.url);
-        lines.push(`${pad}<DT><A HREF="${escape(url)}">${escape(item.bookmark.title)}</A>`);
+        const favicon = faviconData(item.bookmark.favicon);
+        lines.push(`${pad}<DT><A HREF="${escape(url)}"${favicon ? ` ICON="${escape(favicon)}"` : ''}>${escape(item.bookmark.title)}</A>`);
       } else {
         if (ancestors.has(item.id)) throw new Error('Invalid bookmark folder hierarchy.');
         lines.push(`${pad}<DT><H3>${escape(item.folder.name)}</H3>`, `${pad}<DL><p>`);

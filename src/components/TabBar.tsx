@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserPane, Tab } from '../types/browser';
 import { Plus, X, Server, Globe, Loader2, Minus, Square, Copy, Terminal, Link2, ArrowLeftRight, VolumeX } from 'lucide-react';
+import { SiteIcon } from './SiteIcon';
 import { orderedTabPages } from '../lib/tabState';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -15,7 +16,7 @@ interface TabBarProps {
   tabs: Tab[];
   activeTabId: string;
   onSelectTab: (id: string) => void;
-  onCloseTab: (id: string, e: React.MouseEvent) => void;
+  onCloseTab: (id: string, e?: React.MouseEvent) => void;
   onCloseTabPage: (id: string, pane: BrowserPane, e?: React.MouseEvent) => void;
   onNewTab: () => void;
   onSwapTabPages: (id: string) => void;
@@ -41,8 +42,9 @@ export const TabBar: React.FC<TabBarProps> = ({
   const stripRef = useRef<HTMLDivElement>(null);
   const tabAreaRef = useRef<HTMLDivElement>(null);
   const newTabRef = useRef<HTMLButtonElement>(null);
+  const brandTitleRef = useRef<HTMLSpanElement>(null);
   const tabDrag = useTabReorder(stripRef, tabs, onSelectTab, onMoveTab);
-  const tabSizes = useTabSizing(tabAreaRef, stripRef, newTabRef, tabs, Boolean(tabDrag.draggedTabId));
+  const tabSizes = useTabSizing(tabAreaRef, stripRef, newTabRef, tabs, Boolean(tabDrag.draggedTabId), brandTitleRef);
   const visibleCount = tabSizes.visibleCount ?? tabs.length;
   const hiddenTabs = tabs.slice(visibleCount);
   const pageActions = useRef(onTabMenuAction);
@@ -177,7 +179,7 @@ export const TabBar: React.FC<TabBarProps> = ({
     >
       {/* Brand Icon & Name */}
       <div
-        className="flex items-center gap-2 px-2.5 py-1 text-xs font-semibold tracking-wider text-purple-400 shrink-0 cursor-default"
+        className="flex items-center px-2.5 py-1 text-xs font-semibold tracking-wider text-purple-400 shrink-0 cursor-default"
         onMouseDown={handleStartDrag}
         onDoubleClick={handleToggleMaximize}
         data-tauri-drag-region
@@ -185,8 +187,11 @@ export const TabBar: React.FC<TabBarProps> = ({
         <div className="w-4 h-4 rounded-full bg-gradient-to-tr from-purple-600 to-cyan-400 flex items-center justify-center shadow-sm shadow-purple-500/30 pointer-events-none">
           <div className="w-1.5 h-1.5 rounded-full bg-[#090c10]"></div>
         </div>
-        <span className="hidden sm:inline bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent font-bold tracking-tight pointer-events-none">
-          AuraView
+        <span ref={brandTitleRef} data-brand-title-hidden={Boolean(tabSizes.hideTitle)} aria-hidden={Boolean(tabSizes.hideTitle)}
+          className="shrink-0 overflow-hidden pointer-events-none" style={{ width: tabSizes.hideTitle ? 0 : undefined }}>
+          <span className="inline-block whitespace-nowrap pl-2 bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent font-bold tracking-tight">
+            AuraView
+          </span>
         </span>
       </div>
 
@@ -213,6 +218,7 @@ export const TabBar: React.FC<TabBarProps> = ({
           const tabTitle = linked ? `${pages[0].page.title} | ${pages[1].page.title} (Split view)` : pages[0].page.title;
 
           return pages.map(({ pane, page }, index) => {
+            const pageWidth = tabSizes.widths[page.id] ?? 176;
             const linkedFirst = linked && index === 0;
             const linkedLast = linked && index === 1;
             const isLocalhost = page.isAiServer || /^(https?:\/\/)?(localhost|127\.0\.0\.1|\[::1\])([:/]|$)/i.test(page.url);
@@ -222,6 +228,8 @@ export const TabBar: React.FC<TabBarProps> = ({
               key={page.id}
               data-tab-page={page.id}
               data-tab-owner={tab.id}
+              data-tab-narrow={pageWidth < 96}
+              data-tab-compact={pageWidth < 48}
               data-tab-overflow={tabIndex >= visibleCount}
               aria-hidden={tabIndex >= visibleCount}
               onPointerDown={(event) => tabDrag.onPointerDown(event, tab.id)}
@@ -251,7 +259,7 @@ export const TabBar: React.FC<TabBarProps> = ({
               aria-label={tabTitle}
               style={{ display: tabIndex >= visibleCount ? 'none' : undefined, marginRight: linkedFirst ? 0 : 4,
                 borderTopLeftRadius: linkedLast ? 0 : 6, borderTopRightRadius: linkedFirst ? 0 : 6,
-                '--tab-width': `${tabSizes.widths[page.id] ?? 176}px` } as React.CSSProperties}
+                '--tab-width': `${pageWidth}px` } as React.CSSProperties}
               className={`browser-tab-page group relative flex min-w-0 shrink-0 items-center gap-2 px-3 py-1.5 h-9 text-xs font-medium cursor-pointer border-t border-x ${
                 isActive
                   ? 'bg-[#151e28] text-gray-100 border-[#374151] shadow-sm'
@@ -260,26 +268,26 @@ export const TabBar: React.FC<TabBarProps> = ({
             >
               {page.isLoading ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400 shrink-0" />
-              ) : isLocalhost ? (
+              ) : <SiteIcon favicon={page.favicon} fallback={isLocalhost ? (
                 <Server className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-purple-400' : 'text-gray-500'}`} />
               ) : (
                 <Globe className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-cyan-400' : 'text-gray-500'}`} />
-              )}
+              )} />}
 
-              <span className="truncate flex-1 text-left select-none">
+              <span className="browser-tab-title truncate flex-1 min-w-0 text-left select-none">
                 <span data-tab-title={page.id} className="inline-block whitespace-nowrap">
                   {page.title || (isLocalhost ? 'Local AI Server' : 'New Tab')}
                 </span>
               </span>
 
-              {page.isMuted && <VolumeX aria-label="Tab muted" className="w-3 h-3 shrink-0 text-amber-400" />}
+              {page.isMuted && <VolumeX aria-label="Tab muted" className="browser-tab-muted w-3 h-3 shrink-0 text-amber-400" />}
 
                 <button type="button" onClick={(event) => { event.stopPropagation(); onSwapTabPages(tab.id); }}
                   onMouseDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}
                   title={linkedFirst ? 'Swap left and right pages' : undefined}
                   aria-label={linkedFirst ? 'Swap left and right pages' : undefined}
                   aria-hidden={!linkedFirst} disabled={!linkedFirst} tabIndex={linkedFirst ? 0 : -1}
-                  className={`group/swap absolute -right-2.5 top-1/2 z-10 -translate-y-1/2 flex h-5 w-5 items-center justify-center rounded text-purple-400 transition-opacity duration-200 motion-reduce:transition-none hover:text-cyan-300 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400 ${isActive ? 'bg-[#151e28]' : 'bg-[#0f141b]'} ${linkedFirst ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+                  className={`browser-tab-swap group/swap absolute -right-2.5 top-1/2 z-10 -translate-y-1/2 flex h-5 w-5 items-center justify-center rounded text-purple-400 transition-opacity duration-200 motion-reduce:transition-none hover:text-cyan-300 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400 ${isActive ? 'bg-[#151e28]' : 'bg-[#0f141b]'} ${linkedFirst ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
                   <Link2 className="w-3.5 h-3.5 transition-opacity group-hover/swap:opacity-0 group-focus-visible/swap:opacity-0 pointer-events-none" aria-label={linkedFirst ? 'Linked split pages' : undefined} />
                   <ArrowLeftRight className="absolute w-3.5 h-3.5 opacity-0 transition-opacity group-hover/swap:opacity-100 group-focus-visible/swap:opacity-100 pointer-events-none" aria-hidden="true" />
                 </button>
@@ -308,7 +316,7 @@ export const TabBar: React.FC<TabBarProps> = ({
         })}
       </div>
 
-        <TabOverflow tabs={hiddenTabs} activeTabId={activeTabId} onSelect={onSelectTab} />
+        <TabOverflow tabs={hiddenTabs} activeTabId={activeTabId} onSelect={onSelectTab} onCloseTab={onCloseTab} />
 
         <button
           ref={newTabRef}
@@ -324,7 +332,7 @@ export const TabBar: React.FC<TabBarProps> = ({
 
       {/* Draggable space after tabs - fills remaining horizontal space */}
       <div
-        className="flex-1 h-full min-w-[30px] cursor-default"
+        className="flex-1 min-w-0 h-full cursor-default"
         onMouseDown={handleStartDrag}
         onDoubleClick={handleToggleMaximize}
         data-tauri-drag-region

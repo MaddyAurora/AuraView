@@ -231,6 +231,7 @@ test('the tab strip renders both real page titles as one linked split tab', () =
     : name === '../hooks/useTabSizing' ? { useTabSizing: () => ({ widths: {} }) }
     : name === './TabOverflow' ? { TabOverflow: () => null }
     : name === './TabContextMenu' ? { TabContextMenu: () => null }
+    : name === './SiteIcon' ? { SiteIcon: ({ fallback }) => fallback }
     : require(name);
   new Function('require', 'exports', 'module', compiled)(requireComponent, module.exports, module);
   const html = renderToStaticMarkup(React.createElement(module.exports.TabBar, {

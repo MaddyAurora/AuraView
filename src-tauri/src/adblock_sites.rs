@@ -26,6 +26,36 @@ fn site(url: &str) -> Option<Site> {
         None
     }
 }
+// Worker-served documents never reach Fetch.requestPaused. Bypass that path only
+// on the public sites whose first-party responses we filter, while enabled.
+pub(crate) fn bypass_service_worker(url: &str, enabled: bool) -> bool {
+    enabled && crate::adblock::public_url(url) && site(url).is_some()
+}
+
+pub(crate) async fn prepare_navigation(view: &tauri::Webview, url: &str) {
+    #[cfg(windows)]
+    if let Err(error) = crate::image_download::devtools(
+        view,
+        "Network.setBypassServiceWorker",
+        serde_json::json!({"bypass": bypass_service_worker(url, crate::adblock::enabled())}),
+    ).await {
+        // A protocol failure must not prevent ordinary browsing.
+        eprintln!("Could not prepare site ad filtering: {error}");
+    }
+    #[cfg(not(windows))]
+    let _ = (view, url);
+}
+
+pub(crate) async fn refresh_views(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    for (label, view) in app.webviews() {
+        if label.starts_with("browser-viewport-") || label.starts_with("browser-split-") {
+            if let Ok(url) = view.url() {
+                prepare_navigation(&view, url.as_str()).await;
+            }
+        }
+    }
+}
 fn eligible(url: &str, resource: &str) -> bool {
     let Some(site) = site(url) else { return false };
     if resource == "Document" {
@@ -410,6 +440,16 @@ mod native {
     use webview2_com_sys::Microsoft::Web::WebView2::Win32::*;
     use windows_core::{HSTRING, PWSTR};
 
+    fn trace(message: &str) {
+        if !cfg!(debug_assertions) { return; }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/.adblock-check.local");
+        if !root.join("trace.enabled").exists() { return; }
+        use std::io::Write;
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(root.join("trace.log")) {
+            let _ = writeln!(file, "{message}");
+        }
+    }
+
     async fn resume(view: &tauri::Webview, id: &str) {
         if crate::image_download::devtools(view, "Fetch.continueResponse", json!({"requestId":id}))
             .await
@@ -429,6 +469,7 @@ mod native {
         };
         let url = event["request"]["url"].as_str().unwrap_or_default();
         let resource = event["resourceType"].as_str().unwrap_or_default();
+        trace(&format!("paused {} {resource} code={} on={} top_public={} eligible={}", tauri::Url::parse(url).map(|u| format!("{}{}", u.origin().ascii_serialization(), u.path())).unwrap_or_default(), event["responseStatusCode"], crate::adblock::enabled(), crate::adblock::public_url(&top), eligible(url, resource)));
         if !crate::adblock::enabled()
             || !crate::adblock::public_url(&top)
             || !eligible(url, resource)
@@ -443,6 +484,7 @@ mod native {
             json!({"requestId":id}),
         )
         .await;
+        trace(&format!("body {}", body.as_ref().map(|v| format!("len={} encoded={}", v["body"].as_str().map(str::len).unwrap_or(0), v["base64Encoded"])).unwrap_or_else(|e| e.clone())));
         let result = (|| -> Option<String> {
             let body = body.ok()?;
             let text = body["body"].as_str()?;
@@ -454,7 +496,9 @@ mod native {
             } else {
                 text.to_string()
             };
-            rewrite_body(url, resource, &text)
+            let rewritten = rewrite_body(url, resource, &text);
+            trace(&format!("rewrite len={} ads={} changed={}", text.len(), text.contains("\"adPlacements\":"), rewritten.is_some()));
+            rewritten
         })();
         if let Some(body) = result.filter(|_| crate::adblock::enabled()) {
             let mut headers: Vec<Value> = event["responseHeaders"]
@@ -480,7 +524,9 @@ mod native {
                 .collect();
             headers.push(json!({"name":"Content-Length", "value":body.len().to_string()}));
             headers.push(json!({"name":"Cache-Control", "value":"no-store"}));
-            if crate::image_download::devtools(&view,"Fetch.fulfillRequest",json!({"requestId":id,"responseCode":200,"responseHeaders":headers,"body":STANDARD.encode(body)})).await.is_ok() { return; }
+            let fulfilled = crate::image_download::devtools(&view,"Fetch.fulfillRequest",json!({"requestId":id,"responseCode":200,"responseHeaders":headers,"body":STANDARD.encode(body)})).await;
+            trace(&format!("fulfill {}", fulfilled.is_ok()));
+            if fulfilled.is_ok() { return; }
         }
         // A parsing/protocol failure must always release the original response.
         resume(&view, id).await;
@@ -490,6 +536,24 @@ mod native {
         view: tauri::Webview,
         top: Rc<RefCell<String>>,
     ) -> windows_core::Result<()> {
+        if cfg!(debug_assertions) && std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/.adblock-check.local/trace.enabled").exists() {
+            let network = core.GetDevToolsProtocolEventReceiver(&HSTRING::from("Network.responseReceived"))?;
+            let mut token = 0;
+            network.add_DevToolsProtocolEventReceived(&webview2_com::DevToolsProtocolEventReceivedEventHandler::create(Box::new(move |_, args| {
+                if let Some(args) = args {
+                    let mut raw = PWSTR::null(); args.ParameterObjectAsJson(&mut raw)?;
+                    if let Ok(data) = serde_json::from_str::<Value>(&webview2_com::take_pwstr(raw)) {
+                        if data["type"] == "Document" {
+                            let response = &data["response"];
+                            trace(&format!("network document worker={} disk={} prefetch={} status={}", response["fromServiceWorker"], response["fromDiskCache"], response["fromPrefetchCache"], response["status"]));
+                        }
+                    }
+                }
+                Ok(())
+            })), &mut token)?;
+            core.CallDevToolsProtocolMethod(&HSTRING::from("Network.enable"), &HSTRING::from("{}"),
+                &webview2_com::CallDevToolsProtocolMethodCompletedHandler::create(Box::new(|_, _| Ok(()))))?;
+        }
         let events =
             core.GetDevToolsProtocolEventReceiver(&HSTRING::from("Fetch.requestPaused"))?;
         let mut token = 0;
@@ -542,6 +606,15 @@ pub(crate) unsafe fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn inspect_direct_watch_sample() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/.adblock-check.local/youtube-watch.html");
+        if !path.exists() { return; }
+        let input = std::fs::read_to_string(path).unwrap();
+        let output = rewrite_body("https://www.youtube.com/watch?v=J77i-E_0JWg&list=RDJ77i-E_0JWg&start_radio=1", "Document", &input)
+            .expect("the direct-watch document must be filtered");
+        assert!(!output.contains("\"adPlacements\":"));
+    }
     #[test]
     fn youtube_player_and_feed_keep_video_data_and_drop_only_ad_entries() {
         let input = r#"{"videoDetails":{"videoId":"real"},"streamingData":{"formats":[{"url":"https://video.example/content"}]},"adPlacements":[{"ad":1}],"playerAds":[{}],"contents":[{"richItemRenderer":{"content":{"adSlotRenderer":{}}}},{"videoRenderer":{"videoId":"ordinary"}}],"caption":"playerAds is just text"}"#;

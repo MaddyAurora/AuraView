@@ -416,11 +416,21 @@ mod native {
                 let mut token = 0;
                 core.add_NavigationStarting(
                     &webview2_com::NavigationStartingEventHandler::create(Box::new(
-                        move |_, args| {
+                        move |sender, args| {
                             if let Some(args) = args {
                                 let mut raw = PWSTR::null();
                                 args.Uri(&mut raw)?;
                                 *navigation.borrow_mut() = webview2_com::take_pwstr(raw);
+                                // Keep page-driven navigation and departures to ordinary/local
+                                // sites in sync too. Native navigation awaits this before loading.
+                                if let Some(core) = sender {
+                                    let bypass = crate::adblock_sites::bypass_service_worker(&navigation.borrow(), enabled());
+                                    let _ = core.CallDevToolsProtocolMethod(
+                                        &HSTRING::from("Network.setBypassServiceWorker"),
+                                        &HSTRING::from(serde_json::json!({"bypass":bypass}).to_string()),
+                                        &webview2_com::CallDevToolsProtocolMethodCompletedHandler::create(Box::new(|_, _| Ok(()))),
+                                    );
+                                }
                             }
                             Ok(())
                         },

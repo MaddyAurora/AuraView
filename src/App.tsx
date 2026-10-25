@@ -7,6 +7,7 @@ import { addTab, applyTabStatus, BrowserSession, closeTab, closeTabPage, closeTa
 import { TabMenuAction } from './lib/tabContextMenu';
 import { TabBar } from './components/TabBar';
 import { NavigationBar } from './components/NavigationBar';
+import { AddressFillRequest } from './components/AddressBar';
 import { LocalhostDock } from './components/LocalhostDock';
 import { BookmarksBar } from './components/BookmarksBar';
 import { WebviewContainer } from './components/WebviewContainer';
@@ -36,6 +37,16 @@ export function App() {
   const isSplitActive = Boolean(activeTab.splitEnabled && activeTab.split);
   const isTauri = '__TAURI_INTERNALS__' in window;
   const focusedView = useRef<BrowserViewRef | undefined>();
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
+  const [addressFill, setAddressFill] = useState<(AddressFillRequest & { view: BrowserViewRef })>();
+  const handleFillApplied = useCallback((id: string) => {
+    setAddressFill((current) => current?.id === id ? undefined : current);
+  }, []);
+  const [addressFocusTabId, setAddressFocusTabId] = useState<string | null>(null);
+  const handleLayoutReady = useCallback((tabId: string) => {
+    setAddressFocusTabId((current) => current === tabId ? null : current);
+  }, []);
 
   const toggleToolbar = useCallback((key: keyof ToolbarVisibility) => {
     const current = toolbarVisibilityRef.current;
@@ -68,6 +79,7 @@ export function App() {
   }, []);
 
   const handleSelectTab = useCallback((id: string) => {
+    setAddressFocusTabId(null);
     setSession((previous) => selectTab(previous, id));
   }, []);
 
@@ -75,8 +87,9 @@ export function App() {
     setSession((previous) => moveTab(previous, id, toIndex));
   }, []);
 
-  const handleNewTab = useCallback((url = 'https://www.google.com') => {
+  const handleNewTab = useCallback((url?: string) => {
     const tab = createTab(`tab-${crypto.randomUUID()}`, url);
+    setAddressFocusTabId(url === undefined ? tab.id : null);
     setSession((previous) => addTab(previous, tab));
   }, []);
 
@@ -86,6 +99,17 @@ export function App() {
     const stops: (() => void)[] = [];
     const retain = (stop: () => void) => { if (disposed) stop(); else stops.push(stop); };
     listen<string>('history-open-url', (event) => handleNewTab(event.payload)).then(retain).catch(console.error);
+    listen<string>('page-selection-open-url', (event) => handleNewTab(event.payload)).then(retain).catch(console.error);
+    listen<{ view: BrowserViewRef; text: string }>('page-selection-fill-address', (event) => {
+      const { view, text } = event.payload;
+      const owner = sessionRef.current.tabs.find((tab) => (tab.splitEnabled ? tabViews(tab) : [tabPageView(tab, 'primary')])
+        .some((candidate) => candidate.tabId === view.tabId && candidate.pane === view.pane));
+      if (!owner) return;
+      setSession((previous) => selectTab(previous, owner.id));
+      setAddressFocusTabId(owner.id);
+      setAddressFill({ id: crypto.randomUUID(), view, text });
+    }).then(retain).catch(console.error);
+    listen<string>('page-selection-error', (event) => setSettingsError(event.payload)).then(retain).catch(console.error);
     listen('browser-history-cleared', () => setSession((previous) => ({ ...previous, closedTabs: [] }))).then(retain).catch(console.error);
     listen<string>('browser-history-error', (event) => setSettingsError(event.payload)).then(retain).catch(console.error);
     void invoke('browser_settings_ready').catch((error) => { if (!disposed) setSettingsError(String(error)); });
@@ -166,6 +190,7 @@ export function App() {
   }, []);
 
   const handlePaneNavigate = useCallback((pane: BrowserPane, url: string) => {
+    setAddressFocusTabId(null);
     const view = tabPageView(activeTab, pane);
     updateStatus({ ...view, url, isLoading: true });
     if (isTauri) invoke('navigate_browser_view', { ...view, url }).catch((error) => {
@@ -279,6 +304,9 @@ export function App() {
         onCloseTab={handleCloseTab} onCloseTabPage={handleCloseTabPage} onNewTab={() => handleNewTab()} onSwapTabPages={handleSwapTabPages}
         onMoveTab={handleMoveTab} canReopenTab={Boolean(session.closedTabs?.length)} onTabMenuAction={handleTabMenuAction} />
       <NavigationBar key={`${activeTabId}:${firstPane}`} url={firstPage.url} isLoading={firstPage.isLoading}
+        autoFocus={addressFocusTabId === activeTabId}
+        fillRequest={!isSplitActive && addressFill?.view.tabId === tabPageView(activeTab, firstPane).tabId && addressFill.view.pane === tabPageView(activeTab, firstPane).pane ? addressFill : undefined}
+        onFillApplied={handleFillApplied}
         downloadsAnchor={downloadsAnchor}
         canGoBack={firstPage.canGoBack} canGoForward={firstPage.canGoForward}
         isSplitActive={isSplitActive} showAiDock={showAiDock} showBookmarks={showBookmarks}
@@ -301,6 +329,8 @@ export function App() {
         onDialogChange={setEditorOpen} />
       {showAiDock && <LocalhostDock onOpenServer={handleOpenServer} onDialogChange={setEditorOpen} />}
       <WebviewContainer activeTab={activeTab} splitTab={activeTab.split || INITIAL_TAB}
+        focusAddress={addressFocusTabId === activeTabId} onLayoutReady={handleLayoutReady}
+        addressFill={addressFill} onFillApplied={handleFillApplied}
         onSplitResize={handleSplitResize}
         isSplitActive={isSplitActive} showAiDock={showAiDock} onNavigate={handlePaneNavigate}
         onReload={(pane) => { void handlePaneAction(pane, 'reload'); }}

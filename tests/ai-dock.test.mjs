@@ -88,6 +88,39 @@ function componentHarness(path, overrides = {}) {
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 const chips = (tree) => tree.props.children[0].props.children[0].props.children[0];
 
+test('middle-clicking a Local Hub chip opens its saved URL once in a new tab without autoscroll', () => {
+  const previous = globalThis.window;
+  for (const native of [false, true]) {
+    const opens = [];
+    globalThis.window = { localStorage: storage(), ...(native ? { __TAURI_INTERNALS__: {} } : {}) };
+    if (native) aiDock.saveAiDock(window.localStorage,
+      aiDock.putAiDockServer(aiDock.loadAiDock(window.localStorage), { ...draft, id: 'comfyui' }));
+    const url = native ? 'http://localhost:7860' : 'http://localhost:8188';
+    const harness = componentHarness('../src/components/LocalhostDock.tsx', {
+      '@tauri-apps/api/event': { listen: async () => () => {} },
+    });
+    const pointer = button => ({ button, prevented: false, stopped: false,
+      preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; } });
+    try {
+      const tree = harness.render({ onOpenServer: (...args) => opens.push(args), onDialogChange() {} });
+      const chip = chips(tree)[0];
+      const down = pointer(1);
+      chip.props.onMouseDown(down);
+      assert.equal(down.prevented, true);
+      assert.deepEqual(opens, []);
+      const middle = pointer(1);
+      chip.props.onAuxClick(middle);
+      assert.equal(middle.prevented, true); assert.equal(middle.stopped, true);
+      assert.deepEqual(opens, [[url, true]]);
+      for (const button of [0, 2]) chip.props.onAuxClick(pointer(button));
+      assert.equal(opens.length, 1);
+      chip.props.onClick();
+      assert.deepEqual(opens.at(-1), [url]);
+    } finally { harness.dispose(); }
+  }
+  if (previous === undefined) delete globalThis.window; else globalThis.window = previous;
+});
+
 test('Dock background and existing entries expose native Add/Edit/Delete menus and preserve launch behavior', async () => {
   const previous = globalThis.window, calls = [], opens = [], events = new Map(), dialogs = [];
   const store = storage();
@@ -197,7 +230,7 @@ test('Dock uses the bookmark drag strip, saves drops, and preserves the displaye
     fail = true; move('comfyui', 0);
     tree = harness.render(props);
     assert.equal(chips(tree).at(-1).props['data-bookmark-item'], 'comfyui');
-    assert.match(tree.props.children[0].props.children[2].props.children, /Unable to save the AI Dock order/);
+    assert.match(tree.props.children[0].props.children[2].props.children, /Unable to save the Local Hub order/);
     assert.equal(aiDock.loadAiDock(store).at(-1).id, 'comfyui');
   } finally { harness.dispose(); globalThis.window = previous; }
 });

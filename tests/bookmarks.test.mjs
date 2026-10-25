@@ -35,6 +35,7 @@ function componentHarness(path, overrides = {}) {
   const mocks = { react: hooks, 'lucide-react': new Proxy({}, { get: () => () => null }),
     '../lib/bookmarks': bookmarks, '../lib/bookmarkTransfer': bookmarkTransfer, './BookmarkDialog': { BookmarkDialog() {} }, './BookmarkMenu': { BookmarkMenu() {} },
     './BookmarkFolderMenu': { BookmarkFolderMenu() {} },
+    './SiteIcon': { SiteIcon: ({ fallback }) => fallback },
     '../hooks/useBookmarkReorder': { useBookmarkReorder: (_ref, ids) => ({ order: ids, events: {}, onPointerDown() {} }) }, ...overrides };
   new Function('require', 'module', 'exports', code)((name) => mocks[name] ?? require(name), module, module.exports);
   const Component = Object.values(module.exports)[0];
@@ -123,6 +124,7 @@ test('adding a page discards its tab ID, saves it as a new bookmark, and retains
   const require = createRequire(url);
   const mocks = { react: hooks, 'lucide-react': new Proxy({}, { get: () => () => null }),
     '@tauri-apps/api/core': { invoke() {} }, '@tauri-apps/api/event': { listen() {} },
+    './SiteIcon': { SiteIcon: ({ fallback }) => fallback },
     '../lib/bookmarks': bookmarks, './BookmarkDialog': { BookmarkDialog() {} }, './BookmarkMenu': { BookmarkMenu() {} },
     './BookmarkFolderMenu': { BookmarkFolderMenu() {} },
     '../hooks/useBookmarkReorder': { useBookmarkReorder: (_ref, ids) => ({ order: ids, events: {}, onPointerDown() {} }) } };
@@ -157,13 +159,14 @@ test('desktop add and edit use a separate native window and apply its save and c
     '@tauri-apps/api/core': { invoke: async (command, args) => calls.push({ command, args }) },
     '@tauri-apps/api/event': { listen: async (event, callback) => { events.set(event, callback); return () => events.delete(event); } },
   });
-  const props = { visible: true, getCurrentPage: () => ({ id: 'tab-1', title: 'Current page', url: 'https://example.com/current' }), onOpen() {}, onDialogChange: (open) => changes.push(open) };
+  const favicon = 'data:image/png;base64,iVBORw0KGgo=';
+  const props = { visible: true, getCurrentPage: () => ({ id: 'tab-1', title: 'Current page', url: 'https://example.com/current', favicon }), onOpen() {}, onDialogChange: (open) => changes.push(open) };
   try {
     let tree = harness.render(props);
     tree.props.children[0].props.children[1].props.onClick();
     tree = harness.render(props);
     assert.equal(tree.props.children[2], null, 'no HTML dialog may replace the native page');
-    assert.deepEqual(calls.at(-1), { command: 'show_bookmark_editor', args: { draft: { title: 'Current page', url: 'https://example.com/current', folderId: null }, data } });
+    assert.deepEqual(calls.at(-1), { command: 'show_bookmark_editor', args: { draft: { title: 'Current page', url: 'https://example.com/current', folderId: null, favicon }, data } });
     events.get('bookmark-editor-closed')({});
     events.get('bookmark-menu-select')({ payload: `edit:${data.bookmarks[0].id}` });
     assert.deepEqual(calls.at(-1).args.draft, data.bookmarks[0]);
@@ -204,6 +207,36 @@ test('native editor saves before notifying the bar and closing, and stays open w
     assert.deepEqual(log, [['persist', BOOKMARKS_KEY, updated], ['emit', 'main', 'bookmark-editor-saved', updated], ['close_bookmark_editor']]);
     harness.dispose();
   } finally { globalThis.window = original; }
+});
+
+test('native favicon updates persist icons for visited bookmarks and notify open folder windows once', async () => {
+  const previousWindow = globalThis.window;
+  let data = putBookmark(empty(), { title: 'Saved page', url: 'https://example.com/', folderId: null });
+  const events = new Map(), messages = [];
+  let writes = 0;
+  globalThis.window = { __TAURI_INTERNALS__: {}, localStorage: {
+    getItem: () => JSON.stringify(data), setItem: (_, value) => { data = JSON.parse(value); writes++; },
+  } };
+  const h = componentHarness('../src/components/BookmarksBar.tsx', {
+    '@tauri-apps/api/core': { invoke: async () => {} },
+    '@tauri-apps/api/event': {
+      listen: async (event, callback) => { events.set(event, callback); return () => events.delete(event); },
+      emit: async (...args) => messages.push(args),
+    },
+  });
+  try {
+    h.render({ visible: true, getCurrentPage: () => ({ title: 'Page', url: 'https://example.com/' }), onOpen() {}, onDialogChange() {} });
+    const favicon = 'data:image/png;base64,iVBORw0KGgo=';
+    events.get('webview-status')({ payload: { favicon, faviconPageUrl: 'https://example.com/' } });
+    assert.equal(data.bookmarks[0].favicon, favicon);
+    assert.equal(writes, 1);
+    assert.deepEqual(messages, [['bookmarks-changed', data]]);
+    events.get('webview-status')({ payload: { favicon, faviconPageUrl: 'https://example.com/' } });
+    events.get('webview-status')({ payload: { favicon, faviconPageUrl: 'https://different.example/' } });
+    events.get('webview-status')({ payload: { favicon: 'https://tracker.example/icon', faviconPageUrl: 'https://example.com/' } });
+    assert.equal(writes, 1);
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally { h.dispose(); globalThis.window = previousWindow; }
 });
 
 test('folder contents contain only saved pages and Add, with right-click actions targeting the exact page', () => {

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Bookmark as BookmarkIcon, X } from 'lucide-react';
-import { BookmarkData, bookmarkFolderPath, putBookmark } from '../lib/bookmarks';
+import { BookmarkData, bookmarkFolderPath, bookmarkUrl, putBookmark } from '../lib/bookmarks';
 
-export interface BookmarkDraft { id?: string; title: string; url: string; folderId: string | null }
+export interface BookmarkDraft { id?: string; title: string; url: string; folderId: string | null; favicon?: string }
 interface Props { draft: BookmarkDraft; data: BookmarkData; onSave: (data: BookmarkData) => void | Promise<void>; onClose: () => void; standalone?: boolean }
 
 export function BookmarkDialog({ draft, data, onSave, onClose, standalone = false }: Props) {
@@ -21,6 +21,7 @@ export function BookmarkDialog({ draft, data, onSave, onClose, standalone = fals
       setSaving(true);
       try {
         await onSave(putBookmark(data, { ...draft, title, url, folderId: folder === '__new__' ? null : folder || null,
+          favicon: bookmarkUrl(url) === bookmarkUrl(draft.url) ? draft.favicon : undefined,
           newFolder: folder === '__new__' ? folderName : undefined }));
       } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to save the bookmark.'); }
       finally { setSaving(false); }

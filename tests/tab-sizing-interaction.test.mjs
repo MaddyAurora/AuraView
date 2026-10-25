@@ -7,12 +7,16 @@ import * as tabSizing from '../src/lib/tabSizing.ts';
 
 // Inspect the real hook's first render after insertion, before its measurement
 // effect runs. A stale visible count can hide an existing page during that gap.
-function harness(initialTabs, available = 1000) {
+function harness(initialTabs, available = 1000, brandWidth = 0) {
   const originals = { document: globalThis.document, ResizeObserver: globalThis.ResizeObserver,
     getComputedStyle: globalThis.getComputedStyle };
   const slots = [], observers = [];
   let cursor = 0, dirty = false, effects = [], result, tabs = initialTabs, frozen = false;
-  const area = { current: { clientWidth: available + 28 + tabSizing.TAB_DRAG_SPACE } };
+  let capacity = available;
+  const visibleBrandWidth = () => result?.hideTitle ? 0 : brandWidth;
+  const area = { current: { getBoundingClientRect: () => ({ width: capacity + 28 - visibleBrandWidth() }) } };
+  const brand = { current: { getBoundingClientRect: () => ({ width: visibleBrandWidth() }),
+    firstElementChild: { getBoundingClientRect: () => ({ width: brandWidth }) } } };
   const button = { current: { getBoundingClientRect: () => ({ width: 28 }) } };
   const strip = { current: { querySelectorAll: () => tabs.flatMap(tabState.orderedTabPages).map(({ page }) => ({
     dataset: { tabTitle: page.id }, getBoundingClientRect: () => ({ width: page.title.length * 7 }),
@@ -52,13 +56,14 @@ function harness(initialTabs, available = 1000) {
     get result() { return result; },
     render(nextTabs = tabs, nextFrozen = frozen) {
       tabs = nextTabs; frozen = nextFrozen; cursor = 0; effects = []; dirty = false;
-      result = module.exports.useTabSizing(area, strip, button, tabs, frozen);
+      result = module.exports.useTabSizing(area, strip, button, tabs, frozen, brand);
       return result;
     },
     commit() {
       let iterations = 0;
       do {
         effects.forEach((effect) => effect()); effects = [];
+        observers.at(-1)?.callback(); // Simulate the resize caused by hiding/showing the label.
         if (!dirty) break;
         assert.ok(++iterations < 10, 'measurements should settle');
         h.render();
@@ -66,7 +71,7 @@ function harness(initialTabs, available = 1000) {
       return result;
     },
     resize(available) {
-      area.current.clientWidth = available + 28 + tabSizing.TAB_DRAG_SPACE;
+      capacity = available;
       observers.at(-1).callback();
       if (dirty) h.render();
       return h.commit();
@@ -107,22 +112,44 @@ test('restoring a split group, duplicating, and resizing use the current groups 
   const pair = tabState.enableTabSplit(tabState.createTab('pair'), 'right');
   const tabs = [pair, tabState.createTab('other'), tabState.createTab('last')];
   const closed = tabState.closeTab({ tabs, activeTabId: 'last' }, 'pair');
-  const h = harness(closed.tabs, 400);
+  const h = harness(closed.tabs, 132);
   try {
     const restored = tabState.reopenTab(closed);
     assert.equal(h.render(restored.tabs).visibleCount, 3);
     h.commit();
     assert.equal(h.result.visibleCount, 3);
     const duplicate = tabState.duplicateTabPage(restored, restored.tabs[0].split.id);
-    assert.equal(h.render(duplicate.tabs).visibleCount, 3);
+    assert.equal(h.render(duplicate.tabs).visibleCount, 2);
     h.commit();
     assert.equal(h.resize(1000).visibleCount, 4);
     assert.equal(h.render(restored.tabs).visibleCount, 3, 'closing should not leave a stale count either');
     h.commit();
     const beforeDrag = h.result;
     h.render(restored.tabs, true); h.commit();
-    assert.deepEqual(h.resize(220), beforeDrag, 'dragging keeps its captured sizes');
+    assert.deepEqual(h.resize(100), beforeDrag, 'dragging keeps its captured sizes');
     h.render(restored.tabs, false); h.commit();
     assert.equal(h.result.visibleCount, 1);
+  } finally { h.dispose(); }
+});
+
+test('brand visibility settles after shrinking, closing tabs, and resizing without oscillating', () => {
+  const tabs = Array.from({ length: 10 }, (_, i) => tabState.createTab(String(i)));
+  const h = harness(tabs, 340, 60);
+  try {
+    assert.equal(h.result.hideTitle, false);
+    assert.ok(Object.values(h.result.widths).every(width => width === 24));
+    assert.equal(h.resize(339).hideTitle, true);
+    assert.equal(h.result.visibleCount, 10);
+    assert.equal(h.resize(280).visibleCount, 10);
+    assert.ok(Object.values(h.result.widths).every(width => width === 24));
+    assert.equal(h.resize(279).visibleCount, 8);
+    assert.equal(h.result.hideTitle, true);
+    h.render(tabs.slice(0, 7)); h.commit();
+    assert.equal(h.result.visibleCount, 7);
+    assert.equal(h.result.hideTitle, false);
+    h.render(tabs); h.commit();
+    assert.equal(h.result.hideTitle, true);
+    assert.equal(h.resize(340).hideTitle, false);
+    assert.equal(h.result.visibleCount, 10);
   } finally { h.dispose(); }
 });

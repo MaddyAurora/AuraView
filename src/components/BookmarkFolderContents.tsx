@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Bookmark as BookmarkIcon, ChevronRight, Folder, Plus } from 'lucide-react';
 import { BookmarkData, bookmarkFolderItems, bookmarkFolderPath } from '../lib/bookmarks';
 import { useBookmarkReorder } from '../hooks/useBookmarkReorder';
+import { SiteIcon } from './SiteIcon';
 
 interface Props {
   data: BookmarkData;
@@ -46,7 +47,7 @@ export function BookmarkFolderContents({ data, folderId, onAction, onContext, on
           onClick={(event) => onAction(`${event.ctrlKey || event.metaKey ? 'newtab' : 'open'}:${id}`)}
           onAuxClick={(event) => { if (event.button === 1) { event.preventDefault(); onAction(`newtab:${id}`); } }}
           onContextMenu={(event) => { event.preventDefault(); onContext(id, event.clientX, event.clientY); }}>
-          <BookmarkIcon className="h-3.5 w-3.5 shrink-0 text-gray-500" /><span className="truncate">{bookmark.title}</span>
+          <SiteIcon favicon={bookmark.favicon} fallback={<BookmarkIcon className="h-3.5 w-3.5 shrink-0 text-gray-500" />} /><span className="truncate">{bookmark.title}</span>
         </button>;
       })}
       {!children.length && <p className="px-3 py-3 text-gray-500">This folder is empty</p>}

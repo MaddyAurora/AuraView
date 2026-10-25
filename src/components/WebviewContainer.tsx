@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { BrowserPane, Tab } from '../types/browser';
-import { AddressBar } from './AddressBar';
+import { BrowserPane, BrowserViewRef, Tab } from '../types/browser';
+import { AddressBar, AddressFillRequest } from './AddressBar';
 import { orderedTabPages, tabPageView } from '../lib/tabState';
 import { clampSplitRatio, createLatestTaskRunner } from '../lib/splitResize';
 import { SplitDivider } from './SplitDivider';
@@ -11,6 +11,10 @@ interface WebviewContainerProps {
   splitTab: Tab;
   isSplitActive: boolean;
   showAiDock: boolean;
+  focusAddress?: boolean;
+  onLayoutReady?: (tabId: string) => void;
+  addressFill?: AddressFillRequest & { view: BrowserViewRef };
+  onFillApplied?: (id: string) => void;
   onNavigate: (pane: BrowserPane, url: string) => void;
   onReload: (pane: BrowserPane) => void;
   onGoBack: (pane: BrowserPane) => void;
@@ -20,7 +24,7 @@ interface WebviewContainerProps {
 }
 
 export const WebviewContainer: React.FC<WebviewContainerProps> = ({ activeTab, splitTab,
-  isSplitActive, showAiDock, onNavigate, onReload, onGoBack, onGoForward, onPreviewLoad, onSplitResize }) => {
+  isSplitActive, showAiDock, focusAddress = false, onLayoutReady, addressFill, onFillApplied, onNavigate, onReload, onGoBack, onGoForward, onPreviewLoad, onSplitResize }) => {
   const isTauri = '__TAURI_INTERNALS__' in window;
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(Infinity);
@@ -32,6 +36,8 @@ export const WebviewContainer: React.FC<WebviewContainerProps> = ({ activeTab, s
   primaryUrlRef.current = activeTab.url;
   const layoutQueue = useRef(createLatestTaskRunner());
   const configuredLayout = useRef('');
+  const addressFocusRef = useRef({ tabId: activeTab.id, requested: focusAddress, onLayoutReady });
+  addressFocusRef.current = { tabId: activeTab.id, requested: focusAddress, onLayoutReady };
   const [secondaryReady, setSecondaryReady] = useState(!isTauri);
   const [layoutError, setLayoutError] = useState(false);
   const [reloadVersions, setReloadVersions] = useState<Record<string, number>>({});
@@ -86,11 +92,16 @@ export const WebviewContainer: React.FC<WebviewContainerProps> = ({ activeTab, s
           if (disposed) return;
           try {
             const command = configuredLayout.current === mode ? 'resize_browser_views' : 'configure_browser_views';
+            const focusAddress = command === 'configure_browser_views'
+              && addressFocusRef.current.tabId === tabId && addressFocusRef.current.requested;
             await invoke(command, { primary, secondary, rightUrl, primaryUrl, tabId, primaryView, secondaryView,
               ...audioRef.current,
-              reversed: Boolean(activeTab.splitReversed) });
+              reversed: Boolean(activeTab.splitReversed), focusAddress });
             configuredLayout.current = mode;
-            if (!disposed) { setSecondaryReady(isSplitActive); setLayoutError(false); }
+            if (!disposed) {
+              setSecondaryReady(isSplitActive); setLayoutError(false);
+              if (focusAddress) addressFocusRef.current.onLayoutReady?.(tabId);
+            }
           } catch (error) {
             configuredLayout.current = '';
             console.error('Browser layout error:', error);
@@ -114,6 +125,8 @@ export const WebviewContainer: React.FC<WebviewContainerProps> = ({ activeTab, s
       style={{ flexGrow: isSplitActive ? (side === 'left' ? ratio : 1 - ratio) : 1 }}>
       {isSplitActive && <div className="shrink-0 px-2 py-1.5 bg-[#151e28] border-b border-[#1f2937] text-xs">
         <AddressBar key={`${activeTab.id}:${pane}`} label={side === 'left' ? 'Left pane' : 'Right pane'} url={tab.url} isLoading={tab.isLoading}
+          fillRequest={addressFill?.view.tabId === tabPageView(activeTab, pane).tabId && addressFill.view.pane === tabPageView(activeTab, pane).pane ? addressFill : undefined}
+          onFillApplied={onFillApplied}
           canGoBack={tab.canGoBack} canGoForward={tab.canGoForward} disabled={!secondaryReady}
           onNavigate={(url) => onNavigate(pane, url)} onReload={() => onReload(pane)}
           onGoBack={() => onGoBack(pane)} onGoForward={() => onGoForward(pane)}

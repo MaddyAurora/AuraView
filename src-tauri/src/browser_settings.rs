@@ -327,6 +327,7 @@ pub async fn set_adblock_enabled(
     let settings = Settings { keep_history: KEEP_HISTORY.load(Ordering::SeqCst), adblock_enabled: enabled };
     write_json(&settings_file(&app)?, &settings)?;
     crate::adblock::set_enabled(enabled);
+    crate::adblock_sites::refresh_views(&app).await;
     crate::adblock::notify_views(&app);
     crate::adblock::refresh();
     app.emit("browser-settings-changed", &settings).map_err(|e| e.to_string())?;

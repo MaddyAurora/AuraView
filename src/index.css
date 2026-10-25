@@ -20,6 +20,15 @@
 
 .bookmark-input:focus { outline: 1px solid #fbbf24; border-color: #fbbf24; }
 
+.tab-overflow-list {
+  scrollbar-width: thin;
+  scrollbar-color: #475569 #111923;
+}
+.tab-overflow-list::-webkit-scrollbar { width: 7px; }
+.tab-overflow-list::-webkit-scrollbar-track { background: #111923; }
+.tab-overflow-list::-webkit-scrollbar-thumb { background: #475569; border: 2px solid #111923; border-radius: 5px; }
+.tab-overflow-list::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
 .browser-tab-strip {
   flex: 0 1 auto;
   transition: width 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -64,6 +73,48 @@
   padding-left: 0;
   padding-right: 0;
   margin-left: -0.5rem;
+}
+
+/* Give the title room to shrink, then center just the favicon at the minimum.
+   Narrow tabs still support middle-click and the existing context menu. */
+.browser-tab-page[data-tab-narrow='true'] {
+  padding-left: 8px;
+  padding-right: 8px;
+  gap: 4px;
+}
+
+.browser-tab-page[data-tab-narrow='true'] .browser-tab-close {
+  display: none;
+}
+
+.browser-tab-page[data-tab-narrow='true'] .browser-tab-muted {
+  position: absolute;
+  right: 3px;
+  bottom: 2px;
+  width: 9px;
+  height: 9px;
+}
+
+.browser-tab-page[data-tab-compact='true'] {
+  padding-left: 4px;
+  padding-right: 4px;
+  gap: 0;
+  justify-content: center;
+}
+
+.browser-tab-page[data-tab-compact='true'] .browser-tab-title {
+  display: none;
+}
+
+.browser-tab-page[data-tab-compact='true'] .browser-tab-swap {
+  right: -6px;
+  width: 12px;
+  height: 16px;
+}
+
+.browser-tab-page[data-tab-compact='true'] .browser-tab-swap svg {
+  width: 10px;
+  height: 10px;
 }
 
 /* Bridge the space above each tab to the screen edge when maximized.

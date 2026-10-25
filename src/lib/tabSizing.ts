@@ -1,7 +1,7 @@
-export const MIN_TAB_WIDTH = 80;
+// A 14px favicon, 4px padding on each side, and the two borders.
+export const MIN_TAB_WIDTH = 24;
 export const MAX_TAB_WIDTH = 176;
 export const TAB_GAP = 4;
-export const TAB_DRAG_SPACE = 30;
 
 export function overflowButtonWidth(count: number): number {
   return count > 0 ? 40 + Math.max(0, String(count).length - 1) * 8 : 0;
@@ -28,6 +28,14 @@ export function fitTabGroups(groups: { id: string; preferred: number[] }[], avai
   const widths = fitTabWidths(visible.flatMap((group) => group.preferred), Math.max(0, capacity - counterWidth - gaps));
   return { visibleCount, hiddenCount, counterWidth, widths,
     stripWidth: widths.reduce((sum, width) => sum + width, gaps) };
+}
+
+// Measure capacity without the brand label so hiding it cannot cause a resize
+// loop. Reclaim that label only after the tabs have exhausted their minimums.
+export function fitTabBar(groups: { id: string; preferred: number[] }[], capacity: number, titleWidth: number) {
+  const minimum = groups.reduce((sum, group) => sum + group.preferred.length * MIN_TAB_WIDTH + TAB_GAP, 0);
+  const hideTitle = minimum > Math.max(0, capacity - titleWidth);
+  return { ...fitTabGroups(groups, capacity - (hideTitle ? 0 : titleWidth)), hideTitle };
 }
 
 export function naturalTabWidth(titleWidth: number, linkedFirst: boolean, muted = false): number {

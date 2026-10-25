@@ -22,7 +22,7 @@ export function loadAiDock(storage: Pick<Storage, 'getItem'>): AIServerBookmark[
   const raw = storage.getItem(AI_DOCK_KEY);
   if (raw === null) return DEFAULT_AI_SERVERS.map((server) => ({ ...server }));
   const servers: AIServerBookmark[] = JSON.parse(raw);
-  if (!Array.isArray(servers)) throw new Error('Invalid AI Dock data.');
+  if (!Array.isArray(servers)) throw new Error('Invalid Local Hub data.');
   const ids = new Set<string>();
   for (const server of servers) {
     if (!server || typeof server.id !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(server.id) || ids.has(server.id)
@@ -31,7 +31,7 @@ export function loadAiDock(storage: Pick<Storage, 'getItem'>): AIServerBookmark[
       || typeof server.color !== 'string' || !/^#[\da-f]{6}$/i.test(server.color)
       || typeof server.description !== 'string' || server.description.length > 500
       || typeof server.badge !== 'string'
-      || (server.path !== undefined && !/^\/(?!\/)[^\s\\]*$/.test(server.path))) throw new Error('Invalid AI Dock entry.');
+      || (server.path !== undefined && !/^\/(?!\/)[^\s\\]*$/.test(server.path))) throw new Error('Invalid Local Hub entry.');
     ids.add(server.id);
   }
   return servers;
@@ -56,7 +56,7 @@ export function putAiDockServer(servers: AIServerBookmark[], draft: AIDockDraft)
   const port = aiDockPort(draft.port);
   if (!/^#[\da-f]{6}$/i.test(draft.color)) throw new Error('Choose a valid dot color.');
   const existing = draft.id ? servers.find((server) => server.id === draft.id) : undefined;
-  if (draft.id && !existing) throw new Error('This AI Dock entry no longer exists. Close the editor and try again.');
+  if (draft.id && !existing) throw new Error('This Local Hub entry no longer exists. Close the editor and try again.');
   const server = { ...existing, id: existing?.id || crypto.randomUUID(), name, port,
     color: draft.color.toLowerCase(), description, badge: existing?.badge || 'Custom port' };
   return existing ? servers.map((item) => item.id === existing.id ? server : item) : [...servers, server];

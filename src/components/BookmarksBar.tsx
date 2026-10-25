@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Bookmark as BookmarkIcon, ChevronDown, Folder, Plus } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
-import { BookmarkData, bookmarkBarItems, bookmarkFolderItems, deleteBookmarkFolder, loadBookmarks, moveBookmarkItem, saveBookmarks } from '../lib/bookmarks';
+import { BookmarkData, bookmarkBarItems, bookmarkFolderItems, deleteBookmarkFolder, loadBookmarks, moveBookmarkItem, saveBookmarks, updateBookmarkFavicons } from '../lib/bookmarks';
+import type { BrowserStatus } from '../lib/browserStatus';
+import { SiteIcon } from './SiteIcon';
 import { BookmarkDialog, BookmarkDraft } from './BookmarkDialog';
 import { BookmarkMenu, BookmarkMenuState } from './BookmarkMenu';
 import { BookmarkFolderMenu } from './BookmarkFolderMenu';
@@ -10,7 +12,7 @@ import { useBookmarkReorder } from '../hooks/useBookmarkReorder';
 
 interface Props {
   visible: boolean;
-  getCurrentPage: () => { title: string; url: string };
+  getCurrentPage: () => { title: string; url: string; favicon?: string };
   onOpen: (url: string, newTab?: boolean) => void;
   onDialogChange: (open: boolean) => void;
 }
@@ -57,8 +59,8 @@ export function BookmarksBar({ visible, getCurrentPage, onOpen, onDialogChange }
     } else setDraft(value);
   };
   const addCurrent = (folderId: string | null = null) => {
-    const { title, url } = getCurrentPage();
-    openDialog({ title, url, folderId });
+    const { title, url, favicon } = getCurrentPage();
+    openDialog({ title, url, folderId, ...(favicon ? { favicon } : {}) });
   };
   const commit = (next: BookmarkData) => {
     if (initial.error) throw new Error(initial.error);
@@ -140,6 +142,17 @@ export function BookmarksBar({ visible, getCurrentPage, onOpen, onDialogChange }
       .then(retain).catch(console.error);
     listen<BookmarkData>('bookmark-editor-saved', (event) => { setData(event.payload); setError(''); }).then(retain).catch(console.error);
     listen<BookmarkData>('bookmarks-changed', (event) => { setData(event.payload); setError(''); }).then(retain).catch(console.error);
+    listen<BrowserStatus>('webview-status', (event) => {
+      const { favicon, faviconPageUrl } = event.payload;
+      if (!favicon || !faviconPageUrl) return;
+      try {
+        const current = loadBookmarks(window.localStorage);
+        const next = updateBookmarkFavicons(current, faviconPageUrl, favicon);
+        if (next === current) return;
+        saveBookmarks(window.localStorage, next); setData(next);
+        void emit('bookmarks-changed', next).catch(console.error);
+      } catch { /* Icon refreshes must not interrupt existing bookmarks. */ }
+    }).then(retain).catch(console.error);
     listen('bookmark-editor-closed', () => dialogChangeRef.current(false)).then(retain).catch(console.error);
     return () => { disposed = true; stops.forEach((stop) => stop()); };
   }, [isTauri]);
@@ -202,7 +215,7 @@ export function BookmarksBar({ visible, getCurrentPage, onOpen, onDialogChange }
             onClick={(event) => onOpen(item.bookmark.url, event.ctrlKey || event.metaKey)}
             onAuxClick={(event) => { if (event.button === 1) { event.preventDefault(); onOpen(item.bookmark.url, true); } }}
             onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); void showMenu({ x: event.clientX, y: event.clientY, items: bookmarkContext(id) }); }}>
-            <BookmarkIcon className="h-3.5 w-3.5 shrink-0 text-gray-500" /><span className="max-w-44 truncate">{item.bookmark.title}</span>
+            <SiteIcon favicon={item.bookmark.favicon} fallback={<BookmarkIcon className="h-3.5 w-3.5 shrink-0 text-gray-500" />} /><span className="max-w-44 truncate">{item.bookmark.title}</span>
           </button>;
         })}
         {!data.bookmarks.length && !data.folders.length && !error && <span className="truncate px-1 text-xs text-gray-500">Right-click here to bookmark the current page</span>}

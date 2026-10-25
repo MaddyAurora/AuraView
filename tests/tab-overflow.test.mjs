@@ -8,8 +8,13 @@ import ts from 'typescript';
 import * as sizing from '../src/lib/tabSizing.ts';
 import * as tabState from '../src/lib/tabState.ts';
 import * as tabMenu from '../src/lib/tabContextMenu.ts';
+import * as overflow from '../src/lib/tabOverflow.ts';
 
 function load(path, mocks) {
+  mocks['./SiteIcon'] ||= { SiteIcon: ({ fallback }) => fallback };
+  mocks['../lib/tabOverflow'] ||= overflow;
+  mocks['./TabOverflowMenu'] ||= { TabOverflowMenu: () => null };
+  mocks['../hooks/useMenuAutoClose'] ||= { useMenuAutoClose: () => ({ ref: undefined, onMouseEnter() {}, onMouseLeave() {}, onKeyDown() {} }) };
   const url = new URL(path, import.meta.url);
   const compiled = ts.transpileModule(readFileSync(url, 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
@@ -28,10 +33,10 @@ test('overflow reserves its own space and shows only complete tab groups at ever
     assert.equal(fit.hiddenCount + fit.visibleCount, groups.length);
     assert.equal(fit.widths.length, groups.slice(0, fit.visibleCount).reduce((sum, group) => sum + group.preferred.length, 0));
     assert.ok(fit.stripWidth + fit.counterWidth <= available + 0.001);
-    assert.ok(fit.widths.every((width) => width >= 80 && width <= 176));
+    assert.ok(fit.widths.every((width) => width >= 24 && width <= 176));
     if (fit.hiddenCount) {
       const nextMinimum = groups.slice(0, fit.visibleCount + 1)
-        .reduce((sum, group) => sum + group.preferred.length * 80 + 4, 0);
+        .reduce((sum, group) => sum + group.preferred.length * 24 + 4, 0);
       assert.ok(nextMinimum + sizing.overflowButtonWidth(fit.hiddenCount - 1) > available);
     }
   }
@@ -40,16 +45,36 @@ test('overflow reserves its own space and shows only complete tab groups at ever
 
 test('the counter appears only after shrinking is exhausted and grows for extra digits', () => {
   const groups = Array.from({ length: 10 }, (_, i) => ({ id: String(i), preferred: [176] }));
-  const exact = sizing.fitTabGroups(groups, 840);
+  const exact = sizing.fitTabGroups(groups, 280);
   assert.equal(exact.visibleCount, 10);
   assert.equal(exact.hiddenCount, 0);
-  assert.deepEqual(exact.widths, Array(10).fill(80));
-  const overflow = sizing.fitTabGroups(groups, 839);
-  assert.equal(overflow.visibleCount, 9);
-  assert.equal(overflow.hiddenCount, 1);
+  assert.deepEqual(exact.widths, Array(10).fill(24));
+  const overflow = sizing.fitTabGroups(groups, 279);
+  assert.equal(overflow.visibleCount, 8);
+  assert.equal(overflow.hiddenCount, 2);
   assert.equal(sizing.overflowButtonWidth(10) - sizing.overflowButtonWidth(9), 8);
   assert.equal(sizing.overflowButtonWidth(100) - sizing.overflowButtonWidth(99), 8);
   assert.equal(sizing.fitTabGroups(groups, 2000).hiddenCount, 0);
+});
+
+test('favicon-sized tabs reclaim the brand label before the overflow counter appears', () => {
+  const groups = Array.from({ length: 10 }, (_, i) => ({ id: String(i), preferred: [176] }));
+  const withTitle = sizing.fitTabBar(groups, 340, 60);
+  assert.equal(withTitle.hideTitle, false);
+  assert.equal(withTitle.hiddenCount, 0);
+  assert.deepEqual(withTitle.widths, Array(10).fill(24));
+  const reclaimed = sizing.fitTabBar(groups, 339, 60);
+  assert.equal(reclaimed.hideTitle, true);
+  assert.equal(reclaimed.hiddenCount, 0);
+  const exact = sizing.fitTabBar(groups, 280, 60);
+  assert.equal(exact.hideTitle, true);
+  assert.deepEqual(exact.widths, Array(10).fill(24));
+  const overflow = sizing.fitTabBar(groups, 279, 60);
+  assert.equal(overflow.hideTitle, true);
+  assert.equal(overflow.hiddenCount, 2);
+  assert.ok(overflow.stripWidth + overflow.counterWidth <= 279);
+  assert.equal(sizing.fitTabBar(groups, 600, 60).hideTitle, false);
+  assert.equal(sizing.fitTabBar(groups.slice(0, 7), 279, 60).hideTitle, false);
 });
 
 test('the tab strip hides both linked cards together and displays the exact extra-tab count', () => {
@@ -181,7 +206,7 @@ test('hover and click share one native popup, list only extra tabs, and select t
   const previousClearTimeout = globalThis.clearTimeout;
   globalThis.window = { __TAURI_INTERNALS__: {} };
   let scheduled, cursor = 0, tree, resolvePopup;
-  const slots = [], cleanups = [], calls = [], selected = [];
+  const slots = [], cleanups = [], calls = [], selected = [], closedTabs = [];
   const events = new Map();
   globalThis.setTimeout = (fn) => { scheduled = fn; return 1; };
   globalThis.clearTimeout = () => { scheduled = undefined; };
@@ -198,11 +223,12 @@ test('hover and click share one native popup, list only extra tabs, and select t
   }).TabOverflow;
   const pair = tabState.enableTabSplit(tabState.createTab('pair'), 'right');
   pair.title = 'Left page'; pair.split.title = 'Right page'; pair.splitReversed = true;
-  const props = { tabs: [pair, tabState.createTab('extra')], activeTabId: 'pair', onSelect: (id) => selected.push(id) };
+  const props = { tabs: [pair, tabState.createTab('extra')], activeTabId: 'pair', onSelect: (id) => selected.push(id),
+    onCloseTab: (id) => closedTabs.push(id) };
   const render = () => {
     cursor = 0; tree = TabOverflow(props);
     const button = tree.props.children[0];
-    button.ref.current = { getBoundingClientRect: () => ({ left: 950, bottom: 38 }) };
+    button.ref.current = { getBoundingClientRect: () => ({ left: 950, top: 6, width: 36, height: 32, bottom: 38 }), focus() {} };
     return button;
   };
   try {
@@ -215,12 +241,20 @@ test('hover and click share one native popup, list only extra tabs, and select t
     button.props.onClick(); // A click following hover must not open another popup.
     assert.equal(calls.length, 1);
     assert.deepEqual(calls[0], { command: 'show_tab_overflow', args: {
-      tabs: [{ id: 'pair', title: 'Right page | Left page' }, { id: 'extra', title: 'Google' }],
-      activeTabId: 'pair', x: 950, y: 40,
+      tabs: overflow.overflowEntries(props.tabs),
+      activeTabId: 'pair', anchor: { x: 950, y: 6, width: 36, height: 32 },
     } });
     events.get('tab-overflow-select')({ payload: 'extra' });
     assert.deepEqual(selected, ['extra']);
+    events.get('tab-overflow-close-tab')({ payload: 'pair' });
+    events.get('tab-overflow-close-tab')({ payload: 'already-closed' });
+    assert.deepEqual(closedTabs, ['pair']);
+    assert.deepEqual(selected, ['extra'], 'closing an overflow tab does not select it');
     resolvePopup(); await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(render().props['aria-expanded'], true, 'the popup stays open after its creation command returns');
+    events.get('tab-overflow-select')({ payload: 'already-closed' });
+    assert.deepEqual(selected, ['extra']);
+    events.get('tab-overflow-closed')({ payload: { restoreFocus: true } });
     assert.equal(render().props['aria-expanded'], false);
     button.props.onMouseEnter(); assert.equal(scheduled, undefined); // No dismissal/reopen loop.
   } finally {
@@ -229,5 +263,79 @@ test('hover and click share one native popup, list only extra tabs, and select t
     assert.equal(events.size, 0);
     if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow;
     globalThis.setTimeout = previousTimeout; globalThis.clearTimeout = previousClearTimeout;
+  }
+});
+
+test('the styled menu preserves linked pages, icons and literal titles, and scrolls keyboard selections into view', () => {
+  const previousDocument = globalThis.document;
+  const effects = [], focused = [], scrolled = [], selected = [], closed = [], closedTabs = [];
+  const tabs = Array.from({ length: 100 }, (_, i) => tabState.createTab(`tab-${i}`));
+  tabs[0].title = '<Music & video>';
+  tabs[0].favicon = 'https://untrusted.example/favicon.svg';
+  tabs[1] = tabState.swapTabPages(tabState.enableTabSplit(tabs[1], 'right-page'));
+  tabs[1].split.isMuted = true;
+  const entries = overflow.overflowEntries(tabs);
+  assert.equal(entries[0].favicon, undefined);
+  assert.equal(entries[0].pages[0].favicon, undefined);
+  assert.equal(entries[1].pages[0].url, tabs[1].split.url);
+  assert.equal(overflow.overflowPageLabel({ url: 'file:///B:/page.html' }), 'Local file');
+  const items = entries.map((entry, index) => ({ dataset: { tabId: entry.id },
+    focus() { globalThis.document.activeElement = this; focused.push(index); },
+    scrollIntoView(options) { scrolled.push([index, options]); },
+  }));
+  const list = { querySelectorAll: () => items, contains: (node) => items.includes(node) };
+  globalThis.document = { activeElement: null };
+  try {
+    const Menu = load('../src/components/TabOverflowMenu.tsx', {
+      react: { useRef: () => ({ current: list }), useLayoutEffect: (fn) => effects.push(fn) },
+      'lucide-react': icons,
+    }).TabOverflowMenu;
+    const props = { entries, activeTabId: 'tab-70', onSelect: (id) => selected.push(id), onClose: () => closed.push(true),
+      onCloseTab: (id) => closedTabs.push(id) };
+    const tree = Menu(props);
+    effects.pop()();
+    assert.deepEqual(focused, [70]);
+    assert.deepEqual(scrolled, [[70, { block: 'nearest' }]]);
+    const event = key => ({ key, preventDefault() {}, stopPropagation() {} });
+    tree.props.onKeyDown(event('End'));
+    assert.equal(focused.at(-1), 99);
+    assert.deepEqual(scrolled.at(-1), [99, { block: 'nearest' }]);
+    tree.props.onKeyDown(event('ArrowDown'));
+    assert.equal(focused.at(-1), 0);
+    tree.props.onKeyDown(event('ArrowUp'));
+    assert.equal(focused.at(-1), 99);
+    tree.props.onKeyDown(event('Home'));
+    assert.equal(focused.at(-1), 0);
+    tree.props.children[1].props.children[99].props.onClick();
+    assert.deepEqual(selected, ['tab-99']);
+    const pointer = button => ({ button, prevented: false, stopped: false,
+      preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; } });
+    const down = pointer(1);
+    tree.props.onMouseDown(down);
+    assert.equal(down.prevented, true, 'prevent middle-button autoscroll at mouse-down');
+    assert.deepEqual(closedTabs, [], 'wait for the completed click before closing');
+    const middle = pointer(1);
+    tree.props.children[1].props.children[98].props.onAuxClick(middle);
+    assert.equal(middle.prevented, true); assert.equal(middle.stopped, true);
+    assert.deepEqual(closedTabs, ['tab-98']);
+    assert.deepEqual(selected, ['tab-99']);
+    assert.deepEqual(closed, [], 'keep the menu available for closing additional tabs');
+    for (const button of [0, 2]) tree.props.children[1].props.children[98].props.onAuxClick(pointer(button));
+    const emptySpace = pointer(1);
+    tree.props.onAuxClick(emptySpace);
+    assert.equal(emptySpace.prevented, true);
+    assert.deepEqual(closedTabs, ['tab-98']);
+    tree.props.onKeyDown(event('Escape'));
+    assert.deepEqual(closed, [true]);
+    Menu(props); effects.pop()();
+    assert.equal(focused.length, 5, 'background updates preserve a focused row and its scroll position');
+    const html = renderToStaticMarkup(tree);
+    assert.match(html, /overflow-y-auto/);
+    assert.match(html, /&lt;Music &amp; video&gt;/);
+    assert.match(html, /Linked split pages/);
+    assert.match(html, /Tab muted/);
+    assert.equal((html.match(/role="menuitemradio"/g) || []).length, 100);
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document; else globalThis.document = previousDocument;
   }
 });

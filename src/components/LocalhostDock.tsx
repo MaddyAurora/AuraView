@@ -19,7 +19,7 @@ export const LocalhostDock: React.FC<LocalhostDockProps> = ({ onOpenServer, onDi
   const [customPort, setCustomPort] = useState('');
   const [initial] = useState(() => {
     try { return { servers: loadAiDock(window.localStorage), error: '' }; }
-    catch { return { servers: [] as AIServerBookmark[], error: 'Unable to read AI Dock entries. Your saved data has been left intact.' }; }
+    catch { return { servers: [] as AIServerBookmark[], error: 'Unable to read Local Hub entries. Your saved data has been left intact.' }; }
   });
   const [servers, setServers] = useState(initial.servers);
   const [error, setError] = useState(initial.error);
@@ -35,7 +35,7 @@ export const LocalhostDock: React.FC<LocalhostDockProps> = ({ onOpenServer, onDi
       const next = moveAiDockServer(current, id, index);
       if (next === current) return;
       saveAiDock(window.localStorage, next); setServers(next); setError('');
-    } catch { setError('Unable to save the AI Dock order. Please try again.'); }
+    } catch { setError('Unable to save the Local Hub order. Please try again.'); }
   });
   const closeMenu = useCallback(() => setMenu(null), []);
   const closeDialog = () => { setDraft(null); onDialogChange(false); };
@@ -43,12 +43,12 @@ export const LocalhostDock: React.FC<LocalhostDockProps> = ({ onOpenServer, onDi
     if (initial.error) return;
     try {
       const server = id ? loadAiDock(window.localStorage).find((item) => item.id === id) : undefined;
-      if (id && !server) throw new Error('This AI Dock entry no longer exists.');
+      if (id && !server) throw new Error('This Local Hub entry no longer exists.');
       const value: AIDockDraft = server ? { id: server.id, name: server.name, port: String(server.port), color: server.color, description: server.description }
         : { name: '', port: '', color: '#a855f7', description: '' };
       setMenu(null); onDialogChange(true);
       if (isTauri) void invoke('show_ai_dock_editor', { draft: value }).catch(() => {
-        setError('Unable to open the AI Dock editor. Please try again.'); onDialogChange(false);
+        setError('Unable to open the Local Hub editor. Please try again.'); onDialogChange(false);
       });
       else setDraft(value);
     } catch (reason) { setError((reason as Error).message); }
@@ -64,7 +64,7 @@ export const LocalhostDock: React.FC<LocalhostDockProps> = ({ onOpenServer, onDi
         const next = current.filter((item) => item.id !== id);
         if (next.length === current.length) return;
         saveAiDock(window.localStorage, next); setServers(next); setError('');
-      } catch { setError('Unable to save AI Dock entries. Please try again.'); }
+      } catch { setError('Unable to save Local Hub entries. Please try again.'); }
     }
   };
   const actionRef = useRef(act); actionRef.current = act;
@@ -77,7 +77,7 @@ export const LocalhostDock: React.FC<LocalhostDockProps> = ({ onOpenServer, onDi
     listen<string>('ai-dock-menu-select', (event) => actionRef.current(event.payload)).then(retain).catch(console.error);
     listen('ai-dock-changed', () => {
       try { setServers(loadAiDock(window.localStorage)); setError(''); }
-      catch { setError('Unable to read AI Dock entries. Your saved data has been left intact.'); }
+      catch { setError('Unable to read Local Hub entries. Your saved data has been left intact.'); }
     }).then(retain).catch(console.error);
     listen('ai-dock-editor-closed', () => dialogChangeRef.current(false)).then(retain).catch(console.error);
     return () => { disposed = true; stops.forEach((stop) => stop()); };
@@ -88,7 +88,7 @@ export const LocalhostDock: React.FC<LocalhostDockProps> = ({ onOpenServer, onDi
     if (!isTauri) { setMenu({ x: event.clientX, y: event.clientY, items: aiDockMenu(id) }); return; }
     menuBusy.current = true;
     try { await invoke('show_ai_dock_menu', { x: event.clientX, y: event.clientY, serverId: id || null }); }
-    catch { setError('Unable to open the AI Dock menu. Please try again.'); }
+    catch { setError('Unable to open the Local Hub menu. Please try again.'); }
     finally { menuBusy.current = false; }
   };
 
@@ -102,7 +102,7 @@ export const LocalhostDock: React.FC<LocalhostDockProps> = ({ onOpenServer, onDi
 
   return (
     <>
-    <div role="toolbar" aria-label="AI Dock" onContextMenu={(event) => { void showMenu(event); }} className="bg-[#0c1017] border-b border-[#1a2533] px-4 py-2 flex flex-wrap items-center justify-between gap-3 text-xs select-none">
+    <div role="toolbar" aria-label="Local Hub" onContextMenu={(event) => { void showMenu(event); }} className="bg-[#0c1017] border-b border-[#1a2533] px-4 py-2 flex flex-wrap items-center justify-between gap-3 text-xs select-none">
       {/* Quick Launch Chips */}
       <div ref={strip} className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto touch-none" {...reorder.events}>
         {reorder.order.map((id) => {
@@ -113,6 +113,11 @@ export const LocalhostDock: React.FC<LocalhostDockProps> = ({ onOpenServer, onDi
             data-bookmark-item={server.id}
             onPointerDown={(event) => reorder.onPointerDown(event, server.id)}
             role="button" tabIndex={0} onClick={() => onOpenServer(aiDockUrl(server))}
+            onMouseDown={(event) => { if (event.button === 1) { event.preventDefault(); event.stopPropagation(); } }}
+            onAuxClick={(event) => {
+              if (event.button !== 1) return;
+              event.preventDefault(); event.stopPropagation(); onOpenServer(aiDockUrl(server), true);
+            }}
             onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); onOpenServer(aiDockUrl(server)); } }}
             onContextMenu={(event) => { void showMenu(event, server.id); }}
             className={`group flex shrink-0 items-center gap-2 px-2.5 py-1 rounded-md bg-[#131b26] hover:bg-[#1a2533] border border-[#233346] hover:border-purple-500/60 transition-all shadow-sm ${reorder.draggedId === server.id ? 'cursor-grabbing opacity-60 ring-1 ring-purple-400' : 'cursor-grab'}`}
@@ -166,11 +171,11 @@ export const LocalhostDock: React.FC<LocalhostDockProps> = ({ onOpenServer, onDi
       </form>
       {error && <p role="alert" className="w-full text-red-300">{error}</p>}
     </div>
-    {menu && <BookmarkMenu menu={menu} label="AI Dock" onSelect={act} onClose={closeMenu} />}
+    {menu && <BookmarkMenu menu={menu} label="Local Hub" onSelect={act} onClose={closeMenu} />}
     {draft && <AIDockDialog draft={draft} onClose={closeDialog} onSave={(value) => {
       const next = putAiDockServer(loadAiDock(window.localStorage), value);
       try { saveAiDock(window.localStorage, next); }
-      catch { throw new Error('Unable to save AI Dock entries. Please try again.'); }
+      catch { throw new Error('Unable to save Local Hub entries. Please try again.'); }
       setServers(next); setError(''); closeDialog();
     }} />}
     </>

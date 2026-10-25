@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Website icon checks</title>
+<link id="icon" rel="icon" type="image/svg+xml" href="./favicon-blue.svg">
+<style>body{font:16px system-ui;margin:32px;background:#f4f7fb;color:#162334}button{margin:12px 8px 12px 0;padding:10px 16px}</style>
+<h1>Website icon checks</h1>
+<p>The tab should show a blue square. Save this page as a bookmark and check its icon in the bar and folders.</p>
+<button onclick="document.querySelector('#icon').href='./favicon-blue.svg'">Blue icon</button>
+<button onclick="document.querySelector('#icon').href='./favicon-gold.svg'">Gold icon</button>
+<button onclick="document.querySelector('#icon').href='data:,'">No icon</button>
+<p>Changing icons should update this page only, including when it is in a split or background tab. No icon should restore the default icon.</p>
+</html>

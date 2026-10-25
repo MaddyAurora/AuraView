@@ -1,4 +1,6 @@
-export interface Bookmark { id: string; title: string; url: string; folderId: string | null }
+import { faviconData } from './favicon.ts';
+
+export interface Bookmark { id: string; title: string; url: string; folderId: string | null; favicon?: string }
 export interface BookmarkFolder { id: string; name: string; parentId?: string | null; order?: string[] }
 export interface BookmarkData { bookmarks: Bookmark[]; folders: BookmarkFolder[]; barOrder?: string[] }
 export type BookmarkBarItem = { id: string; kind: 'folder'; folder: BookmarkFolder } | { id: string; kind: 'bookmark'; bookmark: Bookmark };
@@ -45,6 +47,7 @@ export function loadBookmarks(storage: Pick<Storage, 'getItem'>): BookmarkData {
       || typeof bookmark.url !== 'string' || !/^https?:\/\//i.test(bookmark.url)
       || (bookmark.folderId !== null && !folders.has(bookmark.folderId))) throw new Error('Invalid bookmark');
     bookmarkUrl(bookmark.url);
+    if (bookmark.favicon !== undefined && !faviconData(bookmark.favicon)) delete bookmark.favicon;
   }
   return data;
 }
@@ -131,7 +134,7 @@ export function moveBookmarkItem(data: BookmarkData, id: string, index: number, 
     bookmarks: data.bookmarks.map((item) => item.folderId === folderId ? byId.get(bookmarks[cursor++])! : item) };
 }
 
-export function putBookmark(data: BookmarkData, draft: { id?: string; title: string; url: string; folderId: string | null; newFolder?: string }): BookmarkData {
+export function putBookmark(data: BookmarkData, draft: { id?: string; title: string; url: string; folderId: string | null; newFolder?: string; favicon?: string }): BookmarkData {
   const title = draft.title.trim();
   if (!title) throw new Error('Enter a title for this bookmark.');
   const url = bookmarkUrl(draft.url);
@@ -146,9 +149,17 @@ export function putBookmark(data: BookmarkData, draft: { id?: string; title: str
     folderId = folder.id;
   }
   if (folderId !== null && !folders.some((folder) => folder.id === folderId)) throw new Error('Choose an existing folder or Root.');
-  const bookmark = { id: draft.id || crypto.randomUUID(), title, url, folderId };
+  const existing = data.bookmarks.find((item) => item.id === draft.id);
+  const favicon = !existing || existing.url === url ? faviconData(draft.favicon ?? existing?.favicon) : undefined;
+  const bookmark = { id: draft.id || crypto.randomUUID(), title, url, folderId, ...(favicon ? { favicon } : {}) };
   const next = { ...data, folders, bookmarks: draft.id
     ? data.bookmarks.map((item) => item.id === draft.id ? bookmark : item)
     : [...data.bookmarks, bookmark] };
   return data.barOrder ? { ...next, barOrder: bookmarkBarItems(next).map((item) => item.id) } : next;
+}
+
+export function updateBookmarkFavicons(data: BookmarkData, url: string, icon: unknown): BookmarkData {
+  const favicon = faviconData(icon);
+  if (!favicon || !data.bookmarks.some((item) => item.url === url && item.favicon !== favicon)) return data;
+  return { ...data, bookmarks: data.bookmarks.map((item) => item.url === url && item.favicon !== favicon ? { ...item, favicon } : item) };
 }

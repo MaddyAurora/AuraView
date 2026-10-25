@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex, OnceLock,
+        Arc, Condvar, Mutex, OnceLock,
     },
 };
 use tauri::{AppHandle, Emitter, Manager};
@@ -49,6 +49,10 @@ struct Request {
     stream_only: bool,
     #[serde(default)]
     duration: Option<f64>,
+    #[serde(default)]
+    resolution: Option<u32>,
+    #[serde(default)]
+    audio_only: bool,
 }
 
 #[derive(Clone, Deserialize)]
@@ -71,6 +75,9 @@ pub struct Progress {
     percent: Option<f64>,
     filename: Option<String>,
     revision: u64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    resolutions: Vec<u32>,
+    audio_option: Option<String>,
 }
 fn busy(status: &str) -> bool {
     matches!(
@@ -84,6 +91,20 @@ struct Task {
     label: String,
     cancel: AtomicBool,
     progress: Mutex<Progress>,
+    selection: Mutex<Selection>,
+    selection_changed: Condvar,
+}
+#[derive(Default)]
+struct Selection {
+    available: Vec<u32>,
+    audio: Option<&'static str>,
+    offered: bool,
+    chosen: Option<DownloadChoice>,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum DownloadChoice {
+    Video(Option<u32>),
+    Mp3,
 }
 static TASKS: OnceLock<Mutex<HashMap<String, Arc<Task>>>> = OnceLock::new();
 fn tasks() -> &'static Mutex<HashMap<String, Arc<Task>>> {
@@ -91,6 +112,25 @@ fn tasks() -> &'static Mutex<HashMap<String, Arc<Task>>> {
 }
 
 impl Task {
+    #[cfg(test)]
+    fn select_resolution(&self, resolution: u32) {
+        self.select_download(Some(resolution), false);
+    }
+    fn select_download(&self, resolution: Option<u32>, audio_only: bool) {
+        let mut selection = self.selection.lock().unwrap();
+        let valid = selection.offered && if audio_only {
+            resolution.is_none() && selection.audio.is_some()
+        } else {
+            resolution.map_or(selection.available.is_empty(), |n| selection.available.contains(&n))
+        };
+        if selection.chosen.is_none() && valid {
+            selection.chosen = Some(if audio_only { DownloadChoice::Mp3 } else { DownloadChoice::Video(resolution) });
+            self.selection_changed.notify_all();
+        }
+    }
+    fn has_selection(&self) -> bool {
+        self.selection.lock().unwrap().offered || self.request.resolution.is_some() || self.request.audio_only
+    }
     fn check(&self) -> Result<(), String> {
         if self.cancel.load(Ordering::Relaxed) {
             Err("Download cancelled".into())
@@ -175,6 +215,8 @@ fn validate(request: &Request, source: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-');
     if !valid_id
         || request.title.len() > 1024
+        || (request.audio_only && request.resolution.is_some())
+        || request.resolution.is_some_and(|n| n == 0 || n > 32768)
         || (!request.poster.is_empty() && http_url(&request.poster).is_none())
         || request.instagram_video_id.len() > 40
         || !request.instagram_video_id.bytes().all(|b| b.is_ascii_digit())
@@ -252,6 +294,10 @@ pub fn retry_video_download(
         } else { None })
         .ok_or("Reopen the video’s page and use its download button")?;
     let mut request = task.request.clone();
+    if let Some(choice) = task.selection.lock().unwrap().chosen {
+        request.audio_only = choice == DownloadChoice::Mp3;
+        request.resolution = match choice { DownloadChoice::Video(n) => n, DownloadChoice::Mp3 => None };
+    }
     request.id = crate::image_download::token();
     start(app, view, request, task.source.clone());
     Ok(())
@@ -274,11 +320,15 @@ fn start(app: AppHandle, view: tauri::Webview, request: Request, source: String)
             percent: None,
             filename: None,
             revision: 0,
+            resolutions: Vec::new(),
+            audio_option: None,
         }),
         request,
         source,
         label: view.label().into(),
         cancel: AtomicBool::new(false),
+        selection: Mutex::new(Selection::default()),
+        selection_changed: Condvar::new(),
     });
     {
         let mut registry = tasks().lock().unwrap();
@@ -440,46 +490,69 @@ async fn download(
     let downloads = app.path().download_dir().map_err(|e| e.to_string())?;
     let youtube = http_url(&task.request.page_url)
         .is_some_and(|u| site(u.host_str().unwrap_or("")) == "youtube.com");
-    if !youtube && !task.request.url.is_empty() {
-        let file = work.0.join("direct.media");
-        let direct = if task.request.url.starts_with("blob:") {
-            blob_video(app, view, task, &file).await
-        } else {
-            direct_video(app, view, task, &file).await
-        };
-        if let Ok(ext) = direct {
-            task.check()?;
-            let file_copy = file.clone();
-            let downloads = downloads.clone();
-            let task_copy = task.clone();
-            let app_copy = app.clone();
-            let result = tauri::async_runtime::spawn_blocking(move || {
-                let tools = tool_dir(&app_copy)?;
-                let audio = probe_video(&tools, &file_copy, &task_copy)?;
-                // A streaming player may expose a video-only MP4. Resolve its
-                // permalink to retrieve audio rather than silently saving that track.
-                if !audio && (!task_copy.request.page_url.is_empty()
-                    || instagram_story_target(&task_copy.source).is_some()) {
-                    return Err("Resolve separate audio".into());
-                }
-                task_copy.update(&app_copy, "saving", "Saving video…", 0, None);
-                publish(
-                    &file_copy,
-                    &downloads,
-                    &task_copy.request.title,
-                    ext,
-                    &task_copy,
-                )
-            })
-            .await
-            .map_err(|e| e.to_string())?;
-            if result.is_ok() {
-                return result;
-            }
-            task.check()?;
+    let inspect_first = !task.request.page_url.is_empty()
+        || task.request.streams.iter().any(|hint| hint.kind == "manifest")
+        || instagram_story_target(&task.source).is_some();
+    if !youtube && !inspect_first && !task.request.url.is_empty() {
+        if let Ok(path) = try_direct(app, view, task, &work, &downloads).await {
+            return Ok(path);
         }
         task.check()?;
     }
+    let result = extract_download(app, view, task, work, &downloads).await;
+    if result.is_err() && !youtube && inspect_first && !task.has_selection()
+        && !task.request.url.is_empty()
+        && !result.as_ref().unwrap_err().contains("protected")
+        && !result.as_ref().unwrap_err().contains("Live-stream") {
+        task.check()?;
+        let fallback = WorkDir::new(&app.path().app_cache_dir().map_err(|e| e.to_string())?.join("video-downloads"))?;
+        if let Ok(path) = try_direct(app, view, task, &fallback, &downloads).await {
+            return Ok(path);
+        }
+    }
+    result
+}
+#[cfg(windows)]
+async fn try_direct(app: &AppHandle, view: &tauri::Webview, task: &Arc<Task>, work: &WorkDir, downloads: &Path) -> Result<PathBuf, String> {
+    let file = work.0.join("direct.media");
+    let direct = if task.request.url.starts_with("blob:") {
+        blob_video(app, view, task, &file).await
+    } else {
+        direct_video(app, view, task, &file).await
+    };
+    if let Ok(ext) = direct {
+        task.check()?;
+        let file_copy = file.clone();
+        let downloads = downloads.to_path_buf();
+        let task_copy = task.clone();
+        let app_copy = app.clone();
+        return tauri::async_runtime::spawn_blocking(move || {
+            let tools = tool_dir(&app_copy)?;
+            let audio = probe_video(&tools, &file_copy, &task_copy)?;
+            // A streaming player may expose a video-only MP4. Resolve its
+            // permalink to retrieve audio rather than silently saving that track.
+            if !audio && (!task_copy.request.page_url.is_empty()
+                || instagram_story_target(&task_copy.source).is_some()) {
+                return Err("Resolve separate audio".into());
+            }
+            let mut info = json!({"formats": [{"vcodec": "unknown", "acodec": if audio { "unknown" } else { "none" }}]});
+            if choose_resolution(&app_copy, &task_copy, &mut info)? {
+                task_copy.update(&app_copy, "merging", "Converting to MP3…", 0, None);
+                let audio = convert_mp3(&tools, &file_copy, file_copy.parent().unwrap(), &task_copy)?;
+                task_copy.update(&app_copy, "saving", "Saving MP3…", 0, None);
+                return publish(&audio, &downloads, &task_copy.request.title, "mp3", &task_copy);
+            }
+            task_copy.update(&app_copy, "saving", "Saving video…", 0, None);
+            publish(&file_copy, &downloads, &task_copy.request.title, ext, &task_copy)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    task.check()?;
+    Err("Unable to download the direct video".into())
+}
+#[cfg(windows)]
+async fn extract_download(app: &AppHandle, view: &tauri::Webview, task: &Arc<Task>, work: WorkDir, downloads: &Path) -> Result<PathBuf, String> {
     task.update(app, "preparing", "Resolving video and audio…", 0, None);
     // Story playback can be authenticated even when Instagram rejects the
     // external extractor's webpage lookup. Resolve that exact story in its tab.
@@ -513,6 +586,7 @@ async fn download(
     let user_agent = browser["userAgent"].as_str().unwrap_or("").to_string();
     let app_copy = app.clone();
     let task = task.clone();
+    let downloads = downloads.to_path_buf();
     // Moving the directory guard into the worker also keeps cookies alive through cancellation.
     tauri::async_runtime::spawn_blocking(move || {
         extract_video(
@@ -918,6 +992,119 @@ fn metadata(mut info: Value) -> Result<Value, String> {
     }
     Ok(info)
 }
+
+fn video_resolution(format: &Value) -> Option<u32> {
+    if format["vcodec"] == "none" || format["has_drm"] == true
+        || format["ext"] == "mhtml" || format["protocol"] == "mhtml" {
+        return None;
+    }
+    let height = format["height"].as_u64()?;
+    let width = format["width"].as_u64().filter(|n| *n > 0).unwrap_or(height);
+    u32::try_from(height.min(width)).ok().filter(|n| *n > 0 && *n <= 32768)
+}
+fn resolutions(info: &Value) -> Vec<u32> {
+    let mut choices: Vec<_> = info["formats"].as_array().into_iter().flatten()
+        .filter_map(video_resolution).collect();
+    choices.sort_unstable_by(|a, b| b.cmp(a));
+    choices.dedup();
+    choices
+}
+fn restrict_resolution(info: &mut Value, resolution: u32) -> Result<(), String> {
+    if !resolutions(info).contains(&resolution) {
+        return Err("The selected resolution is no longer available. Retry this video.".into());
+    }
+    if let Some(formats) = info["formats"].as_array_mut() {
+        // Keep all audio choices, but only video tracks at the selected resolution.
+        formats.retain(|f| f["has_drm"] != true && f["ext"] != "mhtml" && f["protocol"] != "mhtml"
+            && ((f["vcodec"] == "none" && f["acodec"] != "none")
+                || video_resolution(f) == Some(resolution)));
+    }
+    // The probe can include an already-selected best format. Force a fresh
+    // selection from the restricted list when loading the saved metadata.
+    clear_preselected_format(info);
+    Ok(())
+}
+fn audio_option(info: &Value) -> Option<&'static str> {
+    let formats: Vec<_> = info["formats"].as_array().map(|f| f.iter().collect())
+        .unwrap_or_else(|| vec![info]);
+    let playable: Vec<_> = formats.into_iter().filter(|f| f["has_drm"] != true
+        && f["ext"] != "mhtml" && f["protocol"] != "mhtml").collect();
+    if playable.iter().any(|f| f["vcodec"] == "none" && f["acodec"] != "none") {
+        Some("download")
+    } else if playable.iter().any(|f| f["vcodec"] != "none" && f["acodec"] != "none") {
+        // Unknown codecs still allow extraction to determine whether audio exists.
+        Some("convert")
+    } else { None }
+}
+fn clear_preselected_format(info: &mut Value) {
+    if let Some(object) = info.as_object_mut() {
+        for key in ["requested_formats", "requested_downloads", "url", "format", "format_id"] {
+            object.remove(key);
+        }
+    }
+}
+fn audio_download_args(info: &mut Value, args: &mut Vec<String>) -> Result<(), String> {
+    let mode = audio_option(info).ok_or("This video has no downloadable audio track")?;
+    if mode == "download" {
+        if let Some(formats) = info["formats"].as_array_mut() {
+            formats.retain(|f| f["vcodec"] == "none" && f["acodec"] != "none"
+                && f["has_drm"] != true && f["ext"] != "mhtml" && f["protocol"] != "mhtml");
+        }
+    }
+    if info["formats"].as_array().is_some_and(|f| !f.is_empty()) {
+        clear_preselected_format(info);
+    }
+    // Use the original MP3 when one exists; other audio containers are encoded
+    // locally. Without a separate track, download a combined video into cache.
+    let selector = if mode == "download" { "ba[ext=mp3]/ba" } else { "b[acodec!=none]/bv*+ba/b" };
+    let index = args.iter().position(|arg| arg == "--format").ok_or("Missing format selector")?;
+    args[index + 1] = selector.into();
+    Ok(())
+}
+fn choose_resolution(app: &AppHandle, task: &Task, info: &mut Value) -> Result<bool, String> {
+    let available = resolutions(info);
+    let audio = audio_option(info);
+    let previous = task.selection.lock().unwrap().chosen.or_else(|| {
+        if task.request.audio_only { Some(DownloadChoice::Mp3) }
+        else { task.request.resolution.map(|n| DownloadChoice::Video(Some(n))) }
+    });
+    let chosen = if previous.is_some() { previous } else if available.len() > 1 || audio.is_some() {
+        {
+            let mut selection = task.selection.lock().unwrap();
+            selection.available = available.clone(); selection.audio = audio; selection.offered = true;
+        }
+        {
+            let mut progress = task.progress.lock().unwrap();
+            progress.resolutions = available; progress.audio_option = audio.map(str::to_string);
+        }
+        task.update(app, "preparing", "Choose a video resolution or MP3", 0, None);
+        // This runs on the blocking extraction worker, leaving the webview free
+        // to receive the selection or cancellation. Abandoned menus expire.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+        let mut selection = task.selection.lock().unwrap();
+        loop {
+            task.check()?;
+            if let Some(chosen) = selection.chosen { break Some(chosen); }
+            if std::time::Instant::now() >= deadline {
+                return Err("Download selection expired. Click the video download button to retry.".into());
+            }
+            selection = task.selection_changed.wait_timeout(selection, std::time::Duration::from_millis(250))
+                .unwrap().0;
+        }
+    } else { None };
+    {
+        let mut progress = task.progress.lock().unwrap();
+        progress.resolutions.clear(); progress.audio_option = None;
+    }
+    if let Some(DownloadChoice::Video(Some(resolution))) = chosen { restrict_resolution(info, resolution)?; }
+    if chosen == Some(DownloadChoice::Mp3) && audio.is_none() {
+        return Err("This video has no downloadable audio track".into());
+    }
+    task.selection.lock().unwrap().chosen = chosen;
+    let mp3 = chosen == Some(DownloadChoice::Mp3);
+    task.update(app, "preparing", if mp3 { "Preparing MP3 audio…" } else { "Preparing video and audio…" }, 0, None);
+    Ok(mp3)
+}
 fn extract_video(
     app: &AppHandle,
     task: &Task,
@@ -936,7 +1123,8 @@ fn extract_video(
             Ok(path) => return Ok(path),
             Err(error) => {
                 task.check()?;
-                if error.contains("protected") || error.contains("Live-stream") {
+                if error.contains("protected") || error.contains("Live-stream")
+                    || task.has_selection() {
                     return Err(error);
                 }
             }
@@ -962,7 +1150,8 @@ fn extract_video(
                 task.check()?;
                 // Preserve DRM/live restrictions and avoid changing existing
                 // successful site extraction. Discovery is a fallback only.
-                if error.contains("protected") || error.contains("Live-stream") {
+                if error.contains("protected") || error.contains("Live-stream")
+                    || task.has_selection() {
                     return Err(error);
                 }
                 primary_error = Some(error);
@@ -1048,7 +1237,7 @@ fn extract_one(
     supplied: Option<Value>,
 ) -> Result<PathBuf, String> {
     task.check()?;
-    let args = extractor_args(tools, work, cookies, &task.source, agent);
+    let mut args = extractor_args(tools, work, cookies, &task.source, agent);
     let mut probe_args = args.clone();
     probe_args.extend([
         "--dump-single-json".into(),
@@ -1058,7 +1247,7 @@ fn extract_one(
     ]);
     let mut metadata_json = String::new();
     let fallback = supplied.is_some() || work.file_name().is_some_and(|name| name == "stream");
-    let info = if let Some(info) = supplied {
+    let mut info = if let Some(info) = supplied {
         metadata(info)?
     } else {
         run_tool(&tools.join("yt-dlp.exe"), &probe_args, task, |line| {
@@ -1068,6 +1257,8 @@ fn extract_one(
         })?;
         metadata(serde_json::from_str(&metadata_json).map_err(|_| "Unable to resolve this video")?)?
     };
+    let mp3 = choose_resolution(app, task, &mut info)?;
+    if mp3 { audio_download_args(&mut info, &mut args)?; }
     let title = info["title"]
         .as_str()
         .unwrap_or(&task.request.title)
@@ -1105,7 +1296,7 @@ fn extract_one(
             task.update(
                 app,
                 "downloading",
-                "Downloading video and audio…",
+                if mp3 { "Downloading audio for MP3…" } else { "Downloading video and audio…" },
                 downloaded,
                 total,
             );
@@ -1125,6 +1316,13 @@ fn extract_one(
     if !file.starts_with(&root) || !file.is_file() {
         return Err("The downloader returned an invalid output file".into());
     }
+    if mp3 {
+        task.update(app, "merging", "Converting to MP3…", 0, None);
+        let audio = convert_mp3(tools, &file, work, task)?;
+        if fallback { verify_stream_duration(tools, &audio, task)?; }
+        task.update(app, "saving", "Saving MP3…", 0, None);
+        return publish(&audio, downloads, &title, "mp3", task);
+    }
     let ext = file
         .extension()
         .and_then(|s| s.to_str())
@@ -1141,6 +1339,35 @@ fn extract_one(
     }
     task.update(app, "saving", "Saving video…", 0, None);
     publish(&file, downloads, &title, ext, task)
+}
+
+fn convert_mp3(tools: &Path, input: &Path, work: &Path, task: &Task) -> Result<PathBuf, String> {
+    task.check()?;
+    let output = if input.extension().is_some_and(|ext| ext == "mp3") {
+        input.to_path_buf()
+    } else {
+        let output = work.join("converted-audio.mp3");
+        run_tool(&tools.join("ffmpeg.exe"), &[
+            "-nostdin".into(), "-y".into(), "-i".into(), input.to_string_lossy().into_owned(),
+            "-map".into(), "0:a:0".into(), "-vn".into(), "-c:a".into(), "libmp3lame".into(),
+            "-q:a".into(), "2".into(), "-f".into(), "mp3".into(), output.to_string_lossy().into_owned(),
+        ], task, |_| {})?;
+        output
+    };
+    let mut probe = String::new();
+    run_tool(&tools.join("ffprobe.exe"), &[
+        "-v".into(), "error".into(), "-show_entries".into(), "stream=codec_type,codec_name".into(),
+        "-of".into(), "json".into(), output.to_string_lossy().into_owned(),
+    ], task, |line| probe.push_str(line))?;
+    let info: Value = serde_json::from_str(&probe).map_err(|_| "Unable to verify the MP3 file")?;
+    let streams = info["streams"].as_array().ok_or("Unable to verify the MP3 file")?;
+    if !streams.iter().any(|s| s["codec_type"] == "audio" && s["codec_name"] == "mp3")
+        || streams.iter().any(|s| s["codec_type"] == "video") {
+        return Err("The converter did not produce a playable MP3 file".into());
+    }
+    task.check()?;
+    if output != input { std::fs::remove_file(input).map_err(|e| e.to_string())?; }
+    Ok(output)
 }
 
 fn verify_stream_duration(tools: &Path, file: &Path, task: &Task) -> Result<(), String> {
@@ -1448,6 +1675,12 @@ mod bridge {
                             task.cancel.store(true, Ordering::Relaxed);
                         }
                     }
+                } else if request.kind == "auraview-video-select" {
+                    if let Some(task) = tasks().lock().unwrap().get(&request.id) {
+                        if task.label == view_target.label() && task.source == source {
+                            task.select_download(request.resolution, request.audio_only);
+                        }
+                    }
                 } else if request.kind == "auraview-video-download" && validate(&request, &source) {
                     start(app.clone(), view_target.clone(), request, source);
                 }
@@ -1508,6 +1741,8 @@ mod tests {
                 streams: Vec::new(),
                 stream_only: false,
                 duration: None,
+                resolution: None,
+                audio_only: false,
             },
             source: "https://example.com/watch".into(),
             label: "test".into(),
@@ -1522,8 +1757,218 @@ mod tests {
                 percent: None,
                 filename: None,
                 revision: 0,
+                resolutions: Vec::new(),
+                audio_option: None,
             }),
+            selection: Mutex::new(Selection::default()),
+            selection_changed: Condvar::new(),
         })
+    }
+    #[test]
+    fn resolution_choices_exclude_audio_drm_and_storyboards_and_keep_selected_audio() {
+        let mut info = json!({"requested_formats": [{"height": 2160}], "url": "https://cdn.example/best",
+            "formats": [
+                {"format_id": "4k", "height": 2160, "width": 3840, "vcodec": "vp9"},
+                {"format_id": "hd-avc", "height": 720, "width": 1280, "vcodec": "h264", "acodec": "none"},
+                {"format_id": "hd-vp9", "height": 720, "width": 1280, "vcodec": "vp9", "acodec": "none"},
+                {"format_id": "audio", "vcodec": "none", "acodec": "aac"},
+                {"format_id": "drm", "height": 4320, "has_drm": true},
+                {"format_id": "storyboard", "height": 180, "vcodec": "none", "ext": "mhtml"},
+                {"format_id": "invalid", "height": 0},
+                {"format_id": "unknown"}
+            ]});
+        assert_eq!(resolutions(&info), vec![2160, 720]);
+        restrict_resolution(&mut info, 720).unwrap();
+        assert_eq!(resolutions(&info), vec![720]);
+        let ids: Vec<_> = info["formats"].as_array().unwrap().iter().map(|f| f["format_id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["hd-avc", "hd-vp9", "audio"]);
+        assert!(info.get("requested_formats").is_none());
+        assert!(info.get("url").is_none());
+        assert!(restrict_resolution(&mut info, 1080).is_err());
+        assert_eq!(video_resolution(&json!({"width":1080, "height":1920})), Some(1080));
+        assert!(resolutions(&json!({"url": "https://cdn.example/one.mp4"})).is_empty());
+        let task = task();
+        task.selection.lock().unwrap().available = vec![1080, 720];
+        task.selection.lock().unwrap().offered = true;
+        task.select_resolution(480);
+        assert_eq!(task.selection.lock().unwrap().chosen, None);
+        task.select_resolution(720);
+        task.select_resolution(1080);
+        assert_eq!(task.selection.lock().unwrap().chosen, Some(DownloadChoice::Video(Some(720))));
+    }
+    #[test]
+    fn mp3_choices_prefer_separate_audio_preserve_native_mp3_and_reject_silent_or_protected_media() {
+        let mut info = json!({"formats": [
+            {"format_id":"video", "vcodec":"h264", "acodec":"none"},
+            {"format_id":"audio", "ext":"m4a", "vcodec":"none", "acodec":"aac"},
+            {"format_id":"mp3", "ext":"mp3", "vcodec":"none", "acodec":"mp3"},
+            {"format_id":"drm", "vcodec":"none", "has_drm":true}
+        ], "requested_formats":[{"format_id":"video"}]});
+        assert_eq!(audio_option(&info), Some("download"));
+        let mut args = vec!["--format".into(), "bv*+ba/b".into()];
+        audio_download_args(&mut info, &mut args).unwrap();
+        assert_eq!(args[1], "ba[ext=mp3]/ba");
+        assert_eq!(info["formats"].as_array().unwrap().len(), 2);
+        assert!(info.get("requested_formats").is_none());
+        let mut combined = json!({"formats":[{"vcodec":"h264", "acodec":"aac", "url":"https://cdn.example/combined.mp4"}]});
+        assert_eq!(audio_option(&combined), Some("convert"));
+        audio_download_args(&mut combined, &mut args).unwrap();
+        assert_eq!(args[1], "b[acodec!=none]/bv*+ba/b");
+        for info in [json!({"formats":[{"vcodec":"h264", "acodec":"none"}]}),
+            json!({"formats":[{"vcodec":"none", "ext":"mhtml"}]}),
+            json!({"formats":[{"vcodec":"h264", "acodec":"aac", "has_drm":true}]})] {
+            assert_eq!(audio_option(&info), None);
+            assert!(audio_download_args(&mut info.clone(), &mut args).is_err());
+        }
+        let task = task();
+        task.select_download(None, true);
+        assert_eq!(task.selection.lock().unwrap().chosen, None);
+        {
+            let mut selection = task.selection.lock().unwrap();
+            selection.offered = true; selection.audio = Some("convert");
+        }
+        task.select_download(Some(720), true);
+        assert_eq!(task.selection.lock().unwrap().chosen, None);
+        task.select_download(None, true);
+        assert_eq!(task.selection.lock().unwrap().chosen, Some(DownloadChoice::Mp3));
+        task.select_download(None, false);
+        assert_eq!(task.selection.lock().unwrap().chosen, Some(DownloadChoice::Mp3));
+    }
+    #[test]
+    fn bundled_downloader_honors_selected_resolution_and_merges_audio() {
+        let tools = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/download-tools");
+        if !tools.join("yt-dlp.exe").exists() { return; }
+        let work = WorkDir::new(&std::env::temp_dir()).unwrap();
+        let sample = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/download-sample.mp4");
+        let task = task();
+        let low = work.0.join("low.mp4");
+        let audio = work.0.join("audio.m4a");
+        run_tool(&tools.join("ffmpeg.exe"), &[
+            "-y".into(), "-i".into(), sample.to_string_lossy().into_owned(),
+            "-vf".into(), "scale=160:90".into(), "-an".into(), low.to_string_lossy().into_owned(),
+            "-vn".into(), "-c:a".into(), "copy".into(), audio.to_string_lossy().into_owned(),
+        ], &task, |_| {}).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        let combined_bytes = std::fs::read(&sample).unwrap();
+        let worker = std::thread::spawn(move || {
+            let low = std::fs::read(low).unwrap();
+            let audio = std::fs::read(audio).unwrap();
+            let mut requests = Vec::new();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !stopped.load(Ordering::Relaxed) && std::time::Instant::now() < deadline {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    std::thread::sleep(std::time::Duration::from_millis(10)); continue;
+                };
+                stream.set_nonblocking(false).unwrap();
+                stream.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+                let mut buffer = [0; 8192];
+                let Ok(n) = stream.read(&mut buffer) else { continue; };
+                if n == 0 { continue; }
+                let request = String::from_utf8_lossy(&buffer[..n]);
+                let path = request.split_whitespace().nth(1).unwrap_or("").to_string();
+                requests.push(path.clone());
+                let data = if path == "/audio.m4a" { &audio } else if path == "/combined.mp4" { &combined_bytes } else { &low };
+                let header = format!("HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", data.len());
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(data);
+            }
+            requests
+        });
+        let mut info = json!({"id":"quality-test", "title":"Resolution test", "extractor":"generic", "formats":[
+            {"format_id":"low", "url":format!("http://{address}/low.mp4"), "width":160, "height":90, "ext":"mp4", "vcodec":"h264", "acodec":"none"},
+            {"format_id":"high", "url":format!("http://{address}/high.mp4"), "width":1280, "height":720, "ext":"mp4", "vcodec":"h264", "acodec":"none"},
+            {"format_id":"audio", "url":format!("http://{address}/audio.m4a"), "ext":"m4a", "vcodec":"none", "acodec":"aac"}
+        ]});
+        let original_info = info.clone();
+        restrict_resolution(&mut info, 90).unwrap();
+        let path = work.0.join("video.json");
+        std::fs::write(&path, serde_json::to_vec(&info).unwrap()).unwrap();
+        let mut args = extractor_args(&tools, &work.0, &work.0.join("session.txt"), "http://example.com", "AuraView test");
+        args.extend(["--load-info-json".into(), path.to_string_lossy().into_owned(),
+            "--print".into(), "after_move:AVFILE:%(filepath)j".into()]);
+        let mut completed = None;
+        let mut log = Vec::new();
+        let result = run_tool(&tools.join("yt-dlp.exe"), &args, &task, |line| {
+            log.push(line.to_string());
+            if let Some(path) = line.strip_prefix("AVFILE:").and_then(|s| serde_json::from_str::<String>(s).ok()) {
+                completed = Some(PathBuf::from(path));
+            }
+        });
+        result.unwrap();
+        let output = completed.unwrap_or_else(|| panic!("No completed output: {log:?}"));
+        assert!(probe_video(&tools, &output, &task).unwrap(), "selected video must contain audio");
+        let mut dimensions = String::new();
+        run_tool(&tools.join("ffprobe.exe"), &[
+            "-v".into(), "error".into(), "-select_streams".into(), "v:0".into(),
+            "-show_entries".into(), "stream=width,height".into(), "-of".into(), "csv=p=0".into(),
+            output.to_string_lossy().into_owned(),
+        ], &task, |line| dimensions.push_str(line)).unwrap();
+        assert_eq!(dimensions.trim(), "160,90");
+        let downloads = work.0.join("Downloads");
+        let download_mp3 = |mut info: Value, title: &str| {
+            let cache = WorkDir::new(&work.0).unwrap();
+            let cache_path = cache.0.clone();
+            let metadata = cache.0.join("audio.json");
+            let mut args = extractor_args(&tools, &cache.0, &cache.0.join("session.txt"), "http://example.com", "AuraView test");
+            audio_download_args(&mut info, &mut args).unwrap();
+            std::fs::write(&metadata, serde_json::to_vec(&info).unwrap()).unwrap();
+            args.extend(["--load-info-json".into(), metadata.to_string_lossy().into_owned(),
+                "--print".into(), "after_move:AVFILE:%(filepath)j".into()]);
+            let mut input = None;
+            run_tool(&tools.join("yt-dlp.exe"), &args, &task, |line| {
+                if let Some(path) = line.strip_prefix("AVFILE:").and_then(|s| serde_json::from_str::<String>(s).ok()) {
+                    input = Some(PathBuf::from(path));
+                }
+            }).unwrap();
+            let input = input.unwrap();
+            let audio = convert_mp3(&tools, &input, &cache.0, &task).unwrap();
+            assert!(!input.exists(), "the cached source must be deleted after conversion");
+            let bytes = std::fs::read(&audio).unwrap();
+            assert_eq!(convert_mp3(&tools, &audio, &cache.0, &task).unwrap(), audio);
+            assert_eq!(std::fs::read(&audio).unwrap(), bytes, "native MP3 must not be re-encoded");
+            let path = publish(&audio, &downloads, title, "mp3", &task).unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            drop(cache);
+            assert!(!cache_path.exists(), "private cache including cookies must be removed");
+        };
+        download_mp3(original_info, "Separate audio");
+        download_mp3(json!({"id":"combined", "title":"Combined", "extractor":"generic", "formats":[
+            {"format_id":"combined", "url":format!("http://{address}/combined.mp4"), "ext":"mp4", "vcodec":"h264", "acodec":"aac"}
+        ]}), "Converted video");
+        stop.store(true, Ordering::Relaxed);
+        let requests = worker.join().unwrap();
+        assert_eq!(requests.iter().filter(|path| *path == "/low.mp4").count(), 1, "MP3 must never fetch the video-only track");
+        assert_eq!(requests.iter().filter(|path| *path == "/audio.m4a").count(), 2);
+        assert_eq!(requests.iter().filter(|path| *path == "/combined.mp4").count(), 1);
+        assert!(!requests.iter().any(|path| path == "/high.mp4"));
+        let files: Vec<_> = std::fs::read_dir(&downloads).unwrap().map(|entry| entry.unwrap().path()).collect();
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().all(|path| path.extension().unwrap() == "mp3"));
+    }
+    #[test]
+    fn failed_or_cancelled_mp3_conversion_cleans_private_cache_without_publishing() {
+        let tools = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/download-tools");
+        if !tools.join("ffmpeg.exe").exists() { return; }
+        let sample = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/download-stream-video.mp4");
+        let directory = WorkDir::new(&std::env::temp_dir()).unwrap();
+        let downloads = directory.0.join("Downloads");
+        for cancelled in [false, true] {
+            let cache = WorkDir::new(&directory.0).unwrap();
+            let path = cache.0.clone();
+            let video = path.join("cached-video.mp4");
+            std::fs::copy(&sample, &video).unwrap();
+            std::fs::write(path.join("session.txt"), "private").unwrap();
+            let task = task();
+            task.cancel.store(cancelled, Ordering::Relaxed);
+            assert!(convert_mp3(&tools, &video, &path, &task).is_err());
+            drop(cache);
+            assert!(!path.exists());
+            assert!(!downloads.exists(), "failed audio must never appear in Downloads");
+        }
     }
     #[test]
     fn instagram_stories_resolve_only_the_selected_video_and_keep_existing_routes_separate() {

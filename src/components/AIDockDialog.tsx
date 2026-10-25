@@ -15,12 +15,12 @@ export function AIDockDialog({ draft, standalone = false, onSave, onClose }: Pro
     event.preventDefault(); if (saving) return;
     setSaving(true); setError('');
     try { await onSave({ ...draft, name, port, description, color }); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to save this AI Dock entry.'); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to save this Local Hub entry.'); }
     finally { setSaving(false); }
   }}>
     <div className="mb-5 flex items-center gap-2">
-      <Zap className="h-4 w-4 text-purple-400" /><h2 id="ai-dock-dialog-title" className="flex-1 text-sm font-semibold">{draft.id ? 'Edit AI Dock entry' : 'Add AI Dock port'}</h2>
-      <button type="button" aria-label="Close AI Dock editor" onClick={onClose} className="rounded p-1 text-gray-400 hover:bg-white/10 hover:text-white"><X className="h-4 w-4" /></button>
+      <Zap className="h-4 w-4 text-purple-400" /><h2 id="ai-dock-dialog-title" className="flex-1 text-sm font-semibold">{draft.id ? 'Edit Local Hub entry' : 'Add Local Hub port'}</h2>
+      <button type="button" aria-label="Close Local Hub editor" onClick={onClose} className="rounded p-1 text-gray-400 hover:bg-white/10 hover:text-white"><X className="h-4 w-4" /></button>
     </div>
     <div className="space-y-4 text-xs">
       <label className="block">Name<input autoFocus required maxLength={100} value={name} onChange={(event) => setName(event.target.value)} className="bookmark-input" placeholder="My local AI app" /></label>

@@ -10,6 +10,8 @@ mod shortcuts;
 mod fullscreen;
 mod tab_overflow;
 mod tab_context_menu;
+mod page_context_menu;
+mod favicon;
 mod tab_audio;
 mod image_download;
 mod video_download;
@@ -779,6 +781,10 @@ pub struct WebviewStatusPayload {
     pub pane: &'static str,
     pub url: Option<String>,
     pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub favicon: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub favicon_page_url: Option<String>,
     pub is_loading: Option<bool>,
     pub can_go_back: Option<bool>,
     pub can_go_forward: Option<bool>,
@@ -823,13 +829,17 @@ fn begin_navigation(app: &AppHandle, tab_id: &str, pane: &'static str, url: &Url
 }
 
 #[tauri::command]
-fn navigate_browser_view(app: AppHandle, url: String, pane: Option<String>, tab_id: Option<String>) -> Result<(), String> {
+async fn navigate_browser_view(app: AppHandle, url: String, pane: Option<String>, tab_id: Option<String>) -> Result<(), String> {
     let (pane, _) = pane_details(pane.as_deref())?;
     let tab_id = tab_id.as_deref().unwrap_or("tab-1");
     let label = browser_label(tab_id, pane)?;
     let parsed = Url::parse(&url).map_err(|error| error.to_string())?;
     let webview = app.get_webview(&label).ok_or("Browser pane is not ready")?;
     let destination = begin_navigation(&app, tab_id, pane, &parsed);
+    let generation = browser_state(tab_id, pane).lock().unwrap().generation;
+    adblock_sites::prepare_navigation(&webview, destination.as_str()).await;
+    // Preparing the network policy must not let an older click replace a newer one.
+    if browser_state(tab_id, pane).lock().unwrap().generation != generation { return Ok(()); }
     // A late command for a background tab must not bring its webview forward.
     if browser_state(tab_id, pane).lock().unwrap().visible {
         let _ = webview.set_focus();
@@ -842,7 +852,7 @@ fn navigate_browser_view(app: AppHandle, url: String, pane: Option<String>, tab_
 }
 
 #[tauri::command]
-fn reload_browser_view(app: AppHandle, pane: Option<String>, tab_id: Option<String>) -> Result<(), String> {
+async fn reload_browser_view(app: AppHandle, pane: Option<String>, tab_id: Option<String>) -> Result<(), String> {
     let (pane, _) = pane_details(pane.as_deref())?;
     let tab_id = tab_id.as_deref().unwrap_or("tab-1");
     let label = browser_label(tab_id, pane)?;
@@ -851,8 +861,9 @@ fn reload_browser_view(app: AppHandle, pane: Option<String>, tab_id: Option<Stri
         let state = state.lock().unwrap();
         (state.last_requested_url.clone(), state.offline_retry_target.is_some())
     };
-    if offline { return navigate_browser_view(app, url, Some(pane.to_string()), Some(tab_id.to_string())); }
+    if offline { return navigate_browser_view(app, url, Some(pane.to_string()), Some(tab_id.to_string())).await; }
     let webview = app.get_webview(&label).ok_or("Browser pane is not ready")?;
+    adblock_sites::prepare_navigation(&webview, &url).await;
     let _ = app.emit("webview-status", navigation_status(tab_id, pane, &url, true));
     webview.reload().map_err(|error| error.to_string())
 }
@@ -1039,7 +1050,7 @@ fn layout_focus_target(active_tab_id: Option<&str>, tab_id: &str, reversed: bool
 async fn configure_browser_views(app: AppHandle, primary: BrowserBounds, secondary: Option<BrowserBounds>,
     right_url: String, primary_url: String, tab_id: String, reversed: Option<bool>,
     primary_view: Option<BrowserViewRef>, secondary_view: Option<BrowserViewRef>,
-    primary_muted: Option<bool>, secondary_muted: Option<bool>) -> Result<(), String> {
+    primary_muted: Option<bool>, secondary_muted: Option<bool>, focus_address: Option<bool>) -> Result<(), String> {
     let _layout = LAYOUT_LOCK.lock().unwrap();
     let layout = browser_layout(&tab_id, primary, secondary, reversed.unwrap_or(false), primary_view, secondary_view)?;
     let layout = fullscreen::resolve_layout(&app, layout)?;
@@ -1075,7 +1086,8 @@ async fn configure_browser_views(app: AppHandle, primary: BrowserBounds, seconda
         } else {
             let requested = Url::parse(url).map_err(|error| error.to_string())?;
             let initial_url = begin_navigation(&app, &owner, pane, &requested);
-            let focused = slot == if reversed.unwrap_or(false) { "secondary" } else { "primary" };
+            let focused = !focus_address.unwrap_or(false)
+                && slot == if reversed.unwrap_or(false) { "secondary" } else { "primary" };
             create_browser_view(&app, &owner, pane, bounds, initial_url, focused)?
         };
         tab_audio::apply_muted(&webview, if slot == "primary" { primary_muted } else { secondary_muted }.unwrap_or(false))?;
@@ -1083,7 +1095,12 @@ async fn configure_browser_views(app: AppHandle, primary: BrowserBounds, seconda
     // show() does not give a reused WebView2 keyboard focus. Closing its former
     // owner otherwise leaves accelerators stranded until the user clicks a page.
     // Apply focus after the complete layout is ready, outside accelerator callbacks.
-    if let Some(view) = focus_target {
+    if focus_address.unwrap_or(false) {
+        // The address field is already focused in React. Keep keyboard input in
+        // the main webview after creating the child page, including from Ctrl+T.
+        app.get_webview("main").ok_or("Main webview is not ready")?
+            .set_focus().map_err(|error| error.to_string())?;
+    } else if let Some(view) = focus_target {
         let (owner, pane) = view.key()?;
         app.get_webview(&browser_label(&owner, pane)?).ok_or("Browser pane is not ready")?
             .set_focus().map_err(|error| error.to_string())?;
@@ -1276,6 +1293,9 @@ fn create_browser_view(app: &AppHandle, tab_id: &str, pane: &'static str, bounds
     image_download::install(app, &child, image_token).map_err(|error| error.to_string())?;
     video_download::install(app, &child, video_token).map_err(|error| error.to_string())?;
     browser_download::install(app, &child).map_err(|error| error.to_string())?;
+    page_context_menu::install(app, &child, BrowserViewRef { tab_id: tab_id.into(), pane: pane.into() })
+        .map_err(|error| error.to_string())?;
+    favicon::install(app, &child, tab_id, pane).map_err(|error| error.to_string())?;
     install_location_events(app, &child, tab_id, pane).map_err(|error| error.to_string())?;
     fullscreen::install(app, &child, BrowserViewRef { tab_id: tab_id.to_string(), pane: pane.to_string() })
         .map_err(|error| error.to_string())?;
@@ -1296,7 +1316,15 @@ fn create_browser_view(app: &AppHandle, tab_id: &str, pane: &'static str, bounds
     });
     browser_settings::prune(app);
     if initial_url.as_str() != "about:blank" {
-        child.navigate(initial_url).map_err(|error| error.to_string())?;
+        let view = child.clone();
+        let state = browser_state(tab_id, pane);
+        let generation = state.lock().unwrap().generation;
+        tauri::async_runtime::spawn(async move {
+            adblock_sites::prepare_navigation(&view, initial_url.as_str()).await;
+            if state.lock().unwrap().generation == generation {
+                let _ = view.navigate(initial_url);
+            }
+        });
     }
     Ok(child)
 }
@@ -1314,14 +1342,15 @@ pub fn run() {
                 if matches!(event, tauri::WindowEvent::Focused(true)) {
                     let _ = bookmark_folder::main_focused(window);
                     browser_settings::main_focused(window);
+                    tab_overflow::main_focused(window);
                 } else if matches!(event, tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_)) {
                     let _ = bookmark_folder::close(window.app_handle());
                     browser_settings::dismiss(window.app_handle());
+                    tab_overflow::dismiss(window.app_handle(), false);
                 }
             }
         })
         .on_menu_event(|app, event| {
-            tab_overflow::selected(app, event.id().as_ref());
             tab_context_menu::selected(app, event.id().as_ref());
             bookmark_menu::selected(app, event.id().as_ref());
             ai_dock::selected(app, event.id().as_ref());
@@ -1343,6 +1372,9 @@ pub fn run() {
             navigate_browser_view, reload_browser_view, go_back_browser_view,
             go_forward_browser_view, configure_browser_views, resize_browser_views,
             get_split_drag_pointer, close_browser_views, shortcuts::browser_page_action, tab_overflow::show_tab_overflow,
+            tab_overflow::get_tab_overflow, tab_overflow::update_tab_overflow, tab_overflow::tab_overflow_ready,
+            tab_overflow::close_tab_overflow, tab_overflow::select_overflow_tab,
+            tab_overflow::close_overflow_tab,
             tab_context_menu::show_tab_context_menu, bookmark_menu::show_bookmark_menu,
             tab_audio::set_browser_muted,
             video_download::list_video_downloads, video_download::cancel_video_download, video_download::retry_video_download,

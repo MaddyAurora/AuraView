@@ -8,7 +8,7 @@ type Cleanup = 'history' | 'cookies' | 'sessions';
 const actions: { id: Cleanup; label: string; description: string; icon: typeof Clock }[] = [
   { id: 'history', label: 'Clear browser history', description: 'Visited URLs and download records. Keeps logins, cookies and downloaded files.', icon: Eraser },
   { id: 'cookies', label: 'Clear cookies', description: 'Removes website cookies. May sign you out. Reloads open pages.', icon: Cookie },
-  { id: 'sessions', label: 'Clear login sessions', description: 'Clears cookies and website storage, then reloads pages. Keeps bookmarks and AI Dock.', icon: LogOut },
+  { id: 'sessions', label: 'Clear login sessions', description: 'Clears cookies and website storage, then reloads pages. Keeps bookmarks and Local Hub.', icon: LogOut },
 ];
 
 export function BrowserSettingsButton() {
@@ -71,12 +71,6 @@ export function BrowserSettingsWindow() {
   };
   return <section role="dialog" aria-label="Browser settings" className="h-screen overflow-auto rounded-md border border-[#374151] bg-[#111923] p-2 text-gray-200 text-xs" onKeyDown={(event) => { if (event.key === 'Escape') close(); }}>
     <header className="flex items-center justify-between px-2 pb-1"><span className="font-semibold">Settings</span><button onClick={close} title="Close settings" className="p-1 rounded hover:bg-white/10"><X className="w-3.5 h-3.5" /></button></header>
-    <button role="switch" aria-label="Ad blocking" aria-checked={settings?.adblockEnabled ?? true} disabled={!settings || !!busy} onClick={() => { void toggleAdblock(); }} className="flex w-full items-start gap-3 rounded p-2.5 text-left hover:bg-white/5 disabled:opacity-60">
-      <ShieldCheck className="w-4 h-4 mt-0.5 shrink-0 text-emerald-400" />
-      <span className="flex-1"><span className="block font-medium">Ad blocking</span><span className="block text-gray-400 text-[11px] leading-4 mt-1">Blocks ads and trackers. Reload pages after changing. Local AI apps are excluded.</span></span>
-      <span className={`relative shrink-0 w-8 h-[18px] mt-0.5 rounded-full transition-colors ${(settings?.adblockEnabled ?? true) ? 'bg-emerald-600' : 'bg-gray-600'}`}><span className={`absolute top-0.5 left-0.5 h-3.5 w-3.5 rounded-full bg-white transition-transform ${(settings?.adblockEnabled ?? true) ? 'translate-x-3.5' : ''}`} /></span>
-    </button>
-    <div className="my-1 border-t border-[#293545]" />
     <button onClick={() => { void invoke('open_browser_history').catch((e) => setError(String(e))); }} className="flex items-center gap-3 w-full p-2.5 rounded hover:bg-white/5 text-left"><Clock className="w-4 h-4 text-cyan-400" /><span>History</span><span className="ml-auto text-gray-500">View visited pages</span></button>
     <div className="my-1 border-t border-[#293545]" />
     {actions.map(({ id, label, description, icon: Icon }) => <button key={id} disabled={!!busy} onClick={() => { void run(id); }}
@@ -85,9 +79,15 @@ export function BrowserSettingsWindow() {
       <span><span className="block font-medium">{done[id] ? `${label} — done` : label}</span><span className={`block mt-1 text-[11px] leading-4 ${done[id] ? 'text-emerald-400' : 'text-gray-400'}`}>{description}</span></span>
     </button>)}
     <div className="my-1 border-t border-[#293545]" />
-    <button role="switch" aria-checked={settings?.keepHistory ?? true} disabled={!settings || !!busy} onClick={() => { void toggle(); }} className="flex w-full items-start gap-3 rounded p-2.5 text-left hover:bg-white/5 disabled:opacity-60">
-      <span className={`relative shrink-0 w-8 h-[18px] mt-0.5 rounded-full transition-colors ${settings?.keepHistory ? 'bg-emerald-600' : 'bg-gray-600'}`}><span className={`absolute top-0.5 left-0.5 h-3.5 w-3.5 rounded-full bg-white transition-transform ${settings?.keepHistory ? 'translate-x-3.5' : ''}`} /></span>
-      <span><span className="block font-medium">Keep URL history</span><span className="block text-gray-400 text-[11px] leading-4 mt-1">Off removes saved URL history and clears new visits automatically, on startup and when closing. Keeps cookies and logins.</span></span>
+    <button role="switch" aria-label="Keep URL history" aria-checked={settings?.keepHistory ?? true} disabled={!settings || !!busy} onClick={() => { void toggle(); }} className="flex w-full items-start gap-3 rounded p-2.5 text-left hover:bg-white/5 disabled:opacity-60">
+      <Clock className="w-4 h-4 mt-0.5 shrink-0 text-cyan-400" />
+      <span className="flex-1"><span className="block font-medium">Keep URL history</span><span className="block text-gray-400 text-[11px] leading-4 mt-1">Off removes saved URL history and clears new visits automatically, on startup and when closing. Keeps cookies and logins.</span></span>
+      <span className={`relative shrink-0 w-8 h-[18px] mt-0.5 rounded-full transition-colors ${(settings?.keepHistory ?? true) ? 'bg-emerald-600' : 'bg-gray-600'}`}><span className={`absolute top-0.5 left-0.5 h-3.5 w-3.5 rounded-full bg-white transition-transform ${(settings?.keepHistory ?? true) ? 'translate-x-3.5' : ''}`} /></span>
+    </button>
+    <button role="switch" aria-label="Ad blocking" aria-checked={settings?.adblockEnabled ?? true} disabled={!settings || !!busy} onClick={() => { void toggleAdblock(); }} className="flex w-full items-start gap-3 rounded p-2.5 text-left hover:bg-white/5 disabled:opacity-60">
+      <ShieldCheck className="w-4 h-4 mt-0.5 shrink-0 text-emerald-400" />
+      <span className="flex-1"><span className="block font-medium">Ad blocking</span><span className="block text-gray-400 text-[11px] leading-4 mt-1">Blocks ads and trackers. Reload pages after changing. Local AI apps are excluded.</span></span>
+      <span className={`relative shrink-0 w-8 h-[18px] mt-0.5 rounded-full transition-colors ${(settings?.adblockEnabled ?? true) ? 'bg-emerald-600' : 'bg-gray-600'}`}><span className={`absolute top-0.5 left-0.5 h-3.5 w-3.5 rounded-full bg-white transition-transform ${(settings?.adblockEnabled ?? true) ? 'translate-x-3.5' : ''}`} /></span>
     </button>
     {error && <p role="alert" className="m-2 text-red-300 break-words">{error}</p>}
   </section>;

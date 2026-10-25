@@ -5,7 +5,7 @@
   const send = bridge.postMessage.bind(bridge), stringify = JSON.stringify.bind(JSON);
   const states = new WeakMap(), pending = new Map(), videos = new Set(), encrypted = new WeakSet();
   const mediaStreams = __AURAVIEW_MEDIA_STREAMS__;
-  let host, button, icon, badge, active, focused, observer, resizeObserver, frame = 0, leaving = false, recheckPending = false, x = -1, y = -1;
+  let host, button, icon, badge, menu, menuRequest, menuKey = '', menuButtons = [], active, focused, observer, resizeObserver, frame = 0, leaving = false, recheckPending = false, x = -1, y = -1;
   let pointerIdle = false, idleTimer = 0;
   function clearIdleTimer() { clearTimeout(idleTimer); idleTimer = 0; }
   function showTemporarily() {
@@ -215,6 +215,64 @@
       key: `${url}\n${pageUrl}\n${poster}\n${playerId}`, youtube, ad: youtube && Boolean(video.closest?.('.ad-showing')), drm: Boolean(video.mediaKeys || encrypted.has(video)), live: video.duration === Infinity };
   }
   function post(payload) { try { send(stringify({ ...payload, token })); } catch { return false; } return true; }
+  function closeMenu(cancel = false) {
+    if (cancel && menuRequest && pending.has(menuRequest.state.id)) {
+      post({ kind: 'auraview-video-cancel', id: menuRequest.state.id });
+      menuRequest.state.status = 'cancelling';
+    }
+    menuRequest = undefined; menuKey = ''; menuButtons = [];
+    if (menu) menu.style.display = 'none';
+    button?.setAttribute('aria-expanded', 'false');
+  }
+  function renderMenu(r) {
+    if (!menuRequest) return;
+    const { state, video } = menuRequest;
+    if (!video.isConnected || target(video).key !== state.key || state.status !== 'preparing') {
+      closeMenu(state.status === 'preparing'); return;
+    }
+    const choices = state.resolutions || [], audio = state.audioOption, key = `${state.id}:${choices.join(',')}:${audio || ''}`;
+    if (key !== menuKey) {
+      menuKey = key; menuButtons = []; menu.replaceChildren();
+      const heading = document.createElement('div');
+      heading.textContent = 'Download video or audio';
+      heading.style.cssText = 'padding:7px 10px;color:#a7b6c8;font:11px system-ui';
+      menu.append(heading);
+      const select = (e, choice, message) => {
+        e.preventDefault(); e.stopImmediatePropagation();
+        if (!e.isTrusted || menuRequest?.state !== state || target(video).key !== state.key) return;
+        if (post({ kind: 'auraview-video-select', id: state.id, ...choice })) {
+          state.resolutions = []; state.audioOption = null; state.message = message;
+          closeMenu(); showTemporarily(); button.focus({ preventScroll: true }); render();
+        }
+      };
+      for (const resolution of choices.length ? choices : [null]) {
+        const option = document.createElement('button'); option.type = 'button';
+        option.textContent = resolution == null ? 'Video · Best available' : `${resolution}p${resolution === choices[0] ? ' · Best quality' : ''}`;
+        option.setAttribute('role', 'menuitem');
+        option.style.cssText = 'all:initial;box-sizing:border-box;display:block;width:100%;padding:9px 10px;border-radius:5px;color:#fff;font:12px system-ui;cursor:pointer';
+        option.addEventListener('click', (e) => select(e, resolution == null ? {} : { resolution }, `Preparing ${resolution == null ? '' : `${resolution}p `}video…`));
+        menuButtons.push(option); menu.append(option);
+      }
+      if (audio) {
+        const option = document.createElement('button'); option.type = 'button';
+        option.textContent = audio === 'download' ? 'Download MP3' : 'Convert to MP3';
+        option.title = audio === 'download' ? 'Download the audio track as an MP3' : 'Extract audio from a cached video and save as MP3';
+        option.setAttribute('role', 'menuitem');
+        option.style.cssText = 'all:initial;box-sizing:border-box;display:block;width:100%;margin-top:4px;padding:10px;border-top:1px solid #ffffff20;border-radius:5px;color:#67e8f9;font:12px system-ui;cursor:pointer';
+        option.addEventListener('click', (e) => select(e, { audioOnly: true }, 'Preparing MP3 audio…'));
+        menuButtons.push(option); menu.append(option);
+      }
+    }
+    menu.style.left = `${Math.max(6, r.right - 206)}px`;
+    // Fit the complete list, reserving scrolling only for windows shorter than
+    // the menu. Measure its rendered height so positioning follows the content.
+    menu.style.maxHeight = `${Math.max(0, innerHeight - 12)}px`;
+    menu.style.display = 'block';
+    const height = menu.getBoundingClientRect().height;
+    const below = r.top + 42;
+    menu.style.top = `${Math.max(6, Math.min(below, innerHeight - height - 6))}px`;
+    menu.style.display = 'block'; button.setAttribute('aria-expanded', 'true');
+  }
   function mount() {
     if (host || !document.documentElement) return;
     host = document.createElement('auraview-video-tools');
@@ -224,6 +282,7 @@
     const style = document.createElement('style');
     style.textContent = 'button:focus-visible{outline:2px solid #67e8f9!important;outline-offset:2px}button:hover{background:#253449!important}';
     button = document.createElement('button'); button.type = 'button';
+    button.setAttribute('aria-haspopup', 'menu'); button.setAttribute('aria-expanded', 'false');
     button.style.cssText = 'all:initial;box-sizing:border-box;position:fixed;display:none;width:32px;height:32px;padding:6px;border:1px solid #ffffff55;border-radius:8px;background:#111923ef;color:white;box-shadow:0 2px 8px #0008;cursor:pointer;pointer-events:auto;user-select:none';
     // YouTube enforces Trusted Types: build the icon through DOM APIs rather
     // than assigning HTML, which would prevent the entire overlay from rendering.
@@ -233,14 +292,21 @@
     icon = document.createElementNS('http://www.w3.org/2000/svg', 'path'); svg.append(icon); button.append(svg);
     badge = document.createElement('span');
     badge.style.cssText = 'all:initial;position:fixed;display:none;padding:3px 6px;border-radius:5px;background:#111923ef;color:white;font:11px system-ui;pointer-events:none';
-    root.append(style, button, badge); document.documentElement.append(host);
+    menu = document.createElement('div'); menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', 'Video and MP3 download');
+    menu.style.cssText = 'all:initial;box-sizing:border-box;position:fixed;display:none;width:200px;padding:4px;border:1px solid #ffffff33;border-radius:9px;background:#111923fa;color:white;box-shadow:0 8px 24px #0008;pointer-events:auto;overflow-y:auto;overscroll-behavior:contain';
+    menu.addEventListener('pointerdown', (e) => e.stopImmediatePropagation());
+    root.append(style, button, badge, menu); document.documentElement.append(host);
     lift();
     button.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopImmediatePropagation(); });
     button.addEventListener('click', (e) => {
       e.preventDefault(); e.stopImmediatePropagation();
       if (!e.isTrusted || !active || !playable(active)) return;
       const info = target(active), previous = states.get(active);
+      if (previous?.status === 'preparing' && previous.key === info.key && (previous.resolutions?.length > 1 || previous.audioOption) && !menuRequest) {
+        menuRequest = { video: active, state: previous }; render(); return;
+      }
       if (previous && busy(previous.status) && previous.key === info.key) {
+        closeMenu();
         if (post({ kind: 'auraview-video-cancel', id: previous.id })) { previous.status = 'cancelling'; render(); }
         return;
       }
@@ -248,11 +314,12 @@
       const id = crypto.randomUUID(), video = active;
       const state = { ...info, id, status: 'preparing', message: 'Preparing video…' };
       states.set(video, state); pending.set(id, { video, state });
+      closeMenu(true);
       const streams = mediaStreams.hints(video, { singlePlayer: [...videos].filter((v) => v.isConnected).length === 1, boundOnly: info.ad });
       if (!post({ kind: 'auraview-video-download', id, url: info.url, pageUrl: info.pageUrl, poster: info.poster, title: info.title,
         instagramVideoId: info.playerId,
         streams, streamOnly: info.ad, duration: Number.isFinite(video.duration) && video.duration > 0 ? video.duration : null })) {
-        state.status = 'error'; state.message = 'Unable to start download. Click to retry.'; pending.delete(id);
+        state.status = 'error'; state.message = 'Unable to start download. Click to retry.'; pending.delete(id); closeMenu();
       }
       render();
     });
@@ -272,12 +339,14 @@
   }
   function render() {
     if (!button) return;
+    if (menuRequest && (!menuRequest.video.isConnected || target(menuRequest.video).key !== menuRequest.state.key)) closeMenu(true);
     if (!active?.isConnected || leaving || document.hidden
-      || (pointerIdle && !button.matches(':focus-visible'))) {
-      button.style.display = badge.style.display = 'none'; return;
+      || (pointerIdle && !menuRequest && !button.matches(':focus-visible'))) {
+      button.style.display = badge.style.display = menu.style.display = 'none'; return;
     }
     const r = playable(active);
-    if (!r) { button.style.display = badge.style.display = 'none'; return; }
+    if (!r) { closeMenu(true); button.style.display = badge.style.display = 'none'; return; }
+    renderMenu(r);
     const info = target(active), stored = states.get(active), state = stored?.key === info.key ? stored : undefined;
     let title = state?.message || 'Download video';
     if (info.drm) title = 'Protected video — downloading unavailable';
@@ -291,13 +360,13 @@
     icon.setAttribute('d', path);
     button.style.color = state?.status === 'saved' ? '#67e8a4' : state?.status === 'error' ? '#fca5a5' : '#fff';
     button.style.left = `${r.right - 38}px`; button.style.top = `${r.top + 6}px`; button.style.display = 'block';
-    badge.textContent = busy(state?.status) ? (state.percent != null ? `${Math.floor(state.percent)}%` : state.status === 'merging' ? 'Merging…' : 'Preparing…') : '';
-    badge.style.left = `${r.right - 72}px`; badge.style.top = `${r.top + 42}px`; badge.style.display = badge.textContent ? 'block' : 'none';
+    badge.textContent = busy(state?.status) ? (state.percent != null ? `${Math.floor(state.percent)}%` : state.status === 'merging' ? (state.message?.includes('MP3') ? 'Converting…' : 'Merging…') : 'Preparing…') : '';
+    badge.style.left = `${r.right - 72}px`; badge.style.top = `${r.top + 42}px`; badge.style.display = badge.textContent && !menuRequest ? 'block' : 'none';
   }
   function schedule(recheck = false) {
     recheckPending ||= recheck;
     if (frame || leaving) return;
-    frame = requestAnimationFrame(() => { frame = 0; if (recheckPending && !focused) active = videoAt(); recheckPending = false; render(); });
+    frame = requestAnimationFrame(() => { frame = 0; if (recheckPending && !focused) active = menuRequest?.video || videoAt(); recheckPending = false; render(); });
   }
   function result(payload) {
     if (payload?.kind !== 'auraview-video-result') return;
@@ -305,21 +374,41 @@
     const request = pending.get(payload.id);
     if (!request) return;
     Object.assign(request.state, payload);
+    if (payload.status === 'preparing' && (payload.resolutions?.length > 1 || payload.audioOption)
+      && active === request.video && target(request.video).key === request.state.key) {
+      menuRequest = request;
+    }
+    if (menuRequest?.state === request.state && payload.status !== 'preparing') closeMenu();
     if (!busy(payload.status)) pending.delete(payload.id);
     schedule();
   }
   window.addEventListener('pointermove', (e) => {
     if (!e.isTrusted || e.pointerType === 'touch') return;
     if (x !== e.clientX || y !== e.clientY) showTemporarily();
-    x = e.clientX; y = e.clientY; active = videoAt(e); schedule();
+    x = e.clientX; y = e.clientY; active = menuRequest?.video || videoAt(e); schedule();
   }, { capture: true, passive: true });
+  window.addEventListener('pointerdown', (e) => { if (menuRequest && !e.composedPath().includes(host)) { closeMenu(true); schedule(); } }, true);
+  window.addEventListener('keydown', (e) => {
+    if (!menuRequest || !e.isTrusted) return;
+    const path = e.composedPath();
+    if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); closeMenu(true); button.focus({ preventScroll: true }); schedule(); }
+    else if (e.key === 'Tab') { closeMenu(true); schedule(); }
+    else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key) && path.includes(host)) {
+      e.preventDefault(); e.stopImmediatePropagation();
+      const index = menuButtons.findIndex((b) => path.includes(b));
+      const next = e.key === 'Home' ? 0 : e.key === 'End' ? menuButtons.length - 1
+        : index < 0 ? (e.key === 'ArrowUp' ? menuButtons.length - 1 : 0)
+        : (index + (e.key === 'ArrowUp' ? -1 : 1) + menuButtons.length) % menuButtons.length;
+      menuButtons[next]?.focus({ preventScroll: true });
+    }
+  }, true);
   document.addEventListener('focusin', (e) => {
     if (e.composedPath().includes(host)) return;
     focused = e.target instanceof HTMLVideoElement ? e.target : [...videos].find((v) => e.target.contains?.(v) && playable(v));
     if (focused?.matches(':focus-visible')) showTemporarily();
     active = focused; schedule();
   });
-  function hide() { if (focused) return; clearIdleTimer(); pointerIdle = true; active = undefined; x = y = -1; schedule(); }
+  function hide() { closeMenu(true); if (focused) return; clearIdleTimer(); pointerIdle = true; active = undefined; x = y = -1; schedule(); }
   document.addEventListener('pointerleave', hide);
   window.addEventListener('blur', () => { focused = undefined; hide(); });
   document.addEventListener('scroll', () => schedule(true), { capture: true, passive: true });
@@ -330,7 +419,7 @@
   document.addEventListener('visibilitychange', () => { if (document.hidden) { focused = undefined; hide(); } else schedule(true); });
   window.addEventListener('auraview-video-result', (e) => result({ ...e.detail, kind: 'auraview-video-result' }));
   window.addEventListener('message', (e) => { if (e.source === window.parent && window.parent !== window) result(e.data); });
-  window.addEventListener('pagehide', () => { leaving = true; clearIdleTimer(); pointerIdle = true; x = y = -1; focused = undefined; cancelAnimationFrame(frame); frame = 0; pending.clear(); if (button) button.style.display = badge.style.display = 'none'; });
+  window.addEventListener('pagehide', () => { closeMenu(true); leaving = true; clearIdleTimer(); pointerIdle = true; x = y = -1; focused = undefined; cancelAnimationFrame(frame); frame = 0; pending.clear(); if (button) button.style.display = badge.style.display = 'none'; });
   window.addEventListener('pageshow', () => { leaving = false; track(document); schedule(true); });
   document.addEventListener('DOMContentLoaded', mount, { once: true });
   mount();

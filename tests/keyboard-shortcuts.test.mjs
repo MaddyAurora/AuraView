@@ -106,7 +106,7 @@ async function harness(storage = new Map(), failSave = false) {
   return h;
 }
 
-test('bookmarks and AI Dock independently restore shown and hidden states after app restart, including keyboard changes', async () => {
+test('bookmarks and Local Hub independently restore shown and hidden states after app restart, including keyboard changes', async () => {
   const storage = new Map();
   let h = await harness(storage);
   try {
@@ -170,6 +170,67 @@ test('keyboard tab actions cycle, select numbers, close, and reopen in the real 
   } finally { h.dispose(); }
 });
 
+test('new blank tabs request address focus for the plus button and both Ctrl+T routes until native layout is ready', async () => {
+  const h = await harness();
+  try {
+    assert.equal(h.navigation.autoFocus, false);
+    h.tabBar.onNewTab(); h.flush();
+    const first = h.session.activeTabId;
+    assert.equal(h.navigation.autoFocus, true);
+    assert.equal(h.webviews.focusAddress, true, 'native page creation must preserve address focus');
+    h.key('t', { ctrlKey: true });
+    const second = h.session.activeTabId;
+    h.webviews.onLayoutReady(first); h.flush();
+    assert.equal(h.navigation.autoFocus, true, 'a stale layout cannot consume the newer focus request');
+    h.webviews.onLayoutReady(second); h.flush();
+    assert.equal(h.webviews.focusAddress, false, 'focus is requested only once');
+    h.event('webview-status', { tabId: second, pane: 'primary', url: 'https://www.google.com/', isLoading: false });
+    assert.equal(h.navigation.autoFocus, false, 'page loads must not refocus or select text while typing');
+    h.event('browser-shortcut', { action: 'new-tab' });
+    assert.equal(h.navigation.autoFocus, true);
+    h.navigation.onNavigate('https://example.com/typed'); h.flush();
+    assert.equal(h.navigation.autoFocus, false);
+    h.event('history-open-url', 'https://example.com/from-history');
+    assert.equal(h.navigation.autoFocus, false, 'opening a supplied URL keeps page focus');
+    assert.equal(h.webviews.focusAddress, false);
+    h.tabBar.onNewTab(); h.flush();
+    h.tabBar.onSelectTab(first); h.flush();
+    assert.equal(h.navigation.autoFocus, false, 'switching tabs does not request address focus');
+  } finally { h.dispose(); }
+});
+
+test('selected text fills the owning address field without navigation, including moved and split pages', async () => {
+  const h = await harness();
+  try {
+    const original = h.session.tabs[0];
+    const text = 'https://example.com/selected?x=1&y=two';
+    const calls = h.calls.length;
+    h.event('page-selection-fill-address', { view: tabState.tabPageView(original, 'primary'), text });
+    assert.equal(h.navigation.fillRequest.text, text);
+    assert.equal(h.session.tabs[0].url, original.url);
+    assert.equal(h.calls.length, calls, 'filling the URL must not invoke navigation');
+    const firstRequest = h.navigation.fillRequest.id;
+    h.navigation.onFillApplied(firstRequest); h.flush();
+    assert.equal(h.navigation.fillRequest, undefined);
+    const pair = tabState.swapTabPages(tabState.enableTabSplit(original, 'selected-right'));
+    h.setSession({ tabs: [pair], activeTabId: pair.id }); h.flush();
+    const right = tabState.tabPageView(pair, 'secondary');
+    h.event('page-selection-fill-address', { view: right, text: 'selected right pane' });
+    assert.deepEqual(h.webviews.addressFill.view, right);
+    assert.equal(h.webviews.addressFill.text, 'selected right pane');
+    assert.equal(h.navigation.fillRequest, undefined, 'the shared toolbar must not receive split selections');
+    const secondRequest = h.webviews.addressFill.id;
+    h.webviews.onFillApplied(firstRequest); h.flush();
+    assert.equal(h.webviews.addressFill.id, secondRequest, 'stale address effects cannot clear a newer selection');
+    h.webviews.onFillApplied(secondRequest); h.flush();
+    h.event('page-selection-fill-address', { view: { tabId: 'closed', pane: 'primary' }, text: 'stale' });
+    assert.equal(h.webviews.addressFill, undefined);
+    h.event('page-selection-open-url', 'https://www.bing.com/search?q=selected+text');
+    assert.equal(h.session.tabs.at(-1).url, 'https://www.bing.com/search?q=selected+text');
+    assert.equal(h.navigation.autoFocus, false, 'search results should focus their page');
+  } finally { h.dispose(); }
+});
+
 test('download history previews on hover, closes on leave, and stays open only when pinned', async () => {
   const h = await harness();
   try {
@@ -192,7 +253,7 @@ test('download history previews on hover, closes on leave, and stays open only w
   } finally { h.dispose(); }
 });
 
-test('AI Dock editors block browser shortcuts until their native window closes', async () => {
+test('Local Hub editors block browser shortcuts until their native window closes', async () => {
   const h = await harness();
   try {
     h.navigation.onToggleAiDock(); h.flush();

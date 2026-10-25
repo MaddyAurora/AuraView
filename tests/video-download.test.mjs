@@ -32,6 +32,8 @@ function page(href = 'https://example.com/feed') {
         this[part.slice(0, i).trim().replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = part.slice(i + 1).replace('!important', '').trim(); } } });
     }
     append(...nodes) { for (const node of nodes) { this.children.push(node); node.parentElement = this; } }
+    replaceChildren(...nodes) { this.children = []; this.append(...nodes); }
+    focus() { this.focusVisible = true; this.fire('focus'); }
     contains(node) { return this === node || this.children.some((c) => c.contains(node)); }
     setAttribute(name, value) { this.attrs[name] = value; }
     getAttribute(name) { return this.attrs[name] ?? null; }
@@ -66,7 +68,8 @@ function page(href = 'https://example.com/feed') {
   });
   const button = created.find((e) => e.tagName === 'BUTTON'), host = created.find((e) => e.tagName === 'AURAVIEW-VIDEO-TOOLS');
   const badge = created.find((e) => e.tagName === 'SPAN');
-  const h = { window, document, location, messages, button, badge, host, Element, Video, clock,
+  const menu = created.find((e) => e.attrs.role === 'menu');
+  const h = { window, document, location, messages, button, badge, host, menu, Element, Video, clock,
     advance(ms) { clock.advance(ms); h.flush(); },
     flush() { for (const [id, fn] of frames) { frames.delete(id); fn(); } },
     add(node, container = body) { container.append(node); observers[0].callback([{ target: container, addedNodes: [node] }]); h.flush(); return node; },
@@ -88,6 +91,113 @@ test('the top-right button targets a paused video and trusted clicks only', () =
   const event = h.click(); assert.equal(event.prevented, true); assert.equal(event.stopped, true);
   assert.equal(h.messages[0].url, v.currentSrc); assert.equal(h.messages[0].token, 'private-video-token');
   h.hover(new h.Element('p')); assert.equal(h.button.style.display, 'none');
+});
+
+test('available resolutions open a persistent dropdown and selecting one sends the exact choice once', () => {
+  const h = page('https://www.youtube.com/watch?v=selected'), v = h.video();
+  h.hover(v); h.click();
+  assert.equal(h.menu.style.display, 'none', 'no menu until multiple resolutions are known');
+  h.advance(4000);
+  h.result('request-1', 'preparing', { resolutions: [2160, 1080, 720, 360] });
+  assert.equal(h.menu.style.display, 'block');
+  const options = h.menu.querySelectorAll('button');
+  assert.deepEqual(options.map((b) => b.textContent), ['2160p · Best quality', '1080p', '720p', '360p']);
+  h.advance(10000); h.hover(h.host, 440, 220); h.recheck();
+  assert.equal(h.menu.style.display, 'block', 'idle and host hit tests must keep the choices usable');
+  options[2].fire('click', { isTrusted: false });
+  assert.equal(h.messages.length, 1);
+  options[2].fire('click', { isTrusted: true });
+  assert.equal(h.menu.style.display, 'none');
+  assert.deepEqual(h.messages[1], { kind: 'auraview-video-select', id: 'request-1', resolution: 720, token: 'private-video-token' });
+  options[2].fire('click', { isTrusted: true });
+  assert.equal(h.messages.length, 2, 'a detached menu item cannot submit twice');
+  h.result('request-1', 'downloading', { percent: 20 });
+  h.click(); assert.equal(h.messages.at(-1).kind, 'auraview-video-cancel');
+});
+
+test('resolution menus cancel on outside click, Escape, navigation, and recycled players', () => {
+  for (const dismiss of ['outside', 'escape', 'navigation', 'recycle']) {
+    const h = page(), v = h.video(); h.hover(v); h.click();
+    h.result('request-1', 'preparing', { resolutions: [1080, 720] });
+    const stale = h.menu.querySelectorAll('button')[0];
+    if (dismiss === 'outside') h.window.fire('pointerdown', { composedPath: () => [v] });
+    if (dismiss === 'escape') h.window.fire('keydown', { key: 'Escape', isTrusted: true });
+    if (dismiss === 'navigation') h.window.fire('pagehide');
+    if (dismiss === 'recycle') { v.currentSrc = v.src = 'https://cdn.example.com/next.mp4'; h.recheck(); }
+    h.flush();
+    assert.equal(h.menu.style.display, 'none', dismiss);
+    assert.equal(h.messages.at(-1).kind, 'auraview-video-cancel', dismiss);
+    stale.fire('click', { isTrusted: true });
+    assert.equal(h.messages.length, 2, 'dismissed choices cannot start a download');
+  }
+});
+
+test('MP3 is below video resolutions and uses an audio-only selection', () => {
+  for (const [mode, label] of [['download', 'Download MP3'], ['convert', 'Convert to MP3']]) {
+    const h = page('https://www.youtube.com/watch?v=selected'), v = h.video(); h.hover(v); h.click();
+    h.result('request-1', 'preparing', { resolutions: [1080, 720], audioOption: mode });
+    const options = h.menu.querySelectorAll('button');
+    assert.deepEqual(options.map((b) => b.textContent), ['1080p · Best quality', '720p', label]);
+    options[2].fire('click', { isTrusted: false }); assert.equal(h.messages.length, 1);
+    options[2].fire('click', { isTrusted: true });
+    assert.deepEqual(h.messages[1], { kind: 'auraview-video-select', id: 'request-1', audioOnly: true, token: 'private-video-token' });
+    assert.equal(h.menu.style.display, 'none');
+    options[2].fire('click', { isTrusted: true }); assert.equal(h.messages.length, 2);
+    h.result('request-1', 'preparing', { audioOption: null });
+    assert.equal(h.menu.style.display, 'none', 'preparation must not reopen the menu');
+    h.result('request-1', 'merging', { message: 'Converting to MP3…' });
+    assert.equal(h.badge.textContent, 'Converting…');
+    h.click(); assert.equal(h.messages.at(-1).kind, 'auraview-video-cancel');
+  }
+});
+
+test('single-resolution and direct videos still offer MP3 without losing the video choice', () => {
+  for (const resolutions of [[720], []]) {
+    const h = page(), v = h.video(); h.hover(v); h.click();
+    h.result('request-1', 'preparing', { resolutions, audioOption: 'convert' });
+    assert.equal(h.menu.style.display, 'block');
+    const options = h.menu.querySelectorAll('button');
+    assert.deepEqual(options.map((b) => b.textContent), [resolutions.length ? '720p · Best quality' : 'Video · Best available', 'Convert to MP3']);
+    options[0].fire('click', { isTrusted: true });
+    assert.equal(h.messages[1].audioOnly, undefined);
+    assert.equal(h.messages[1].resolution, resolutions[0]);
+    h.result('request-1', 'preparing', { audioOption: null });
+    assert.equal(h.menu.style.display, 'none');
+  }
+});
+
+test('late MP3 menus cannot attach to recycled players and audio options remain cancelable', () => {
+  const h = page(), v = h.video(); h.hover(v); h.click();
+  v.currentSrc = v.src = 'https://cdn.example.com/next.mp4'; h.recheck();
+  h.result('request-1', 'preparing', { audioOption: 'convert' });
+  assert.equal(h.menu.style.display, 'none');
+  h.click(); h.result('request-2', 'preparing', { audioOption: 'download' });
+  assert.equal(h.menu.style.display, 'block');
+  h.window.fire('keydown', { key: 'Escape', isTrusted: true }); h.flush();
+  assert.equal(h.messages.at(-1).id, 'request-2');
+  assert.equal(h.messages.at(-1).kind, 'auraview-video-cancel');
+});
+
+test('resolution menus support keyboard navigation and stay within the viewport', () => {
+  const h = page(), v = h.video(); v.bounds = { left: 10, right: 210, top: 580, bottom: 700 };
+  h.hover(v, 100, 620); h.click(); h.result('request-1', 'preparing', { resolutions: [1080, 720, 480] });
+  const options = h.menu.querySelectorAll('button');
+  h.window.fire('keydown', { key: 'ArrowDown', isTrusted: true, composedPath: () => [h.button, h.host] });
+  assert.equal(options[0].focusVisible, true);
+  h.window.fire('keydown', { key: 'End', isTrusted: true, composedPath: () => [options[0], h.host] });
+  assert.equal(options.at(-1).focusVisible, true);
+  assert.ok(parseFloat(h.menu.style.top) + h.menu.getBoundingClientRect().height <= 700);
+  assert.ok(parseFloat(h.menu.style.left) >= 6);
+});
+
+test('single-resolution downloads continue without a menu and late choices cannot target a different video', () => {
+  const h = page(), v = h.video(); h.hover(v); h.click();
+  h.result('request-1', 'downloading'); assert.equal(h.menu.style.display, 'none');
+  h.result('request-1', 'saved'); h.click();
+  v.currentSrc = v.src = 'https://cdn.example.com/next.mp4'; h.recheck();
+  h.result('request-2', 'preparing', { resolutions: [1080, 720] });
+  assert.equal(h.menu.style.display, 'none');
+  h.click(); assert.equal(h.messages.at(-1).kind, 'auraview-video-download');
 });
 
 test('video overlays hide after three idle seconds and only real pointer movement restarts the deadline', () => {
