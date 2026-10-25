@@ -24,6 +24,8 @@ mod bookmark_transfer;
 mod ai_dock;
 mod browser_history;
 mod browser_settings;
+mod adblock;
+mod adblock_sites;
 
 struct BrowserState {
     last_requested_url: String,
@@ -1169,9 +1171,10 @@ fn retire_browser_views(registry: &mut BrowserRegistry, keys: &[(String, &'stati
 }
 
 fn initial_browser_url(url: &Url) -> Url {
-    // Tauri rejects data URLs at creation without an extra feature, but permits
-    // navigating an existing webview to our generated offline document.
-    if url.scheme() == "data" { Url::parse("about:blank").unwrap() } else { url.clone() }
+    // Install native request filters before the first real navigation. This also
+    // permits our generated data URLs, which Tauri rejects at view creation.
+    let _ = url;
+    Url::parse("about:blank").unwrap()
 }
 
 fn create_browser_view(app: &AppHandle, tab_id: &str, pane: &'static str, bounds: BrowserBounds,
@@ -1189,8 +1192,10 @@ fn create_browser_view(app: &AppHandle, tab_id: &str, pane: &'static str, bounds
     let app_title = app.clone();
     let image_token = image_download::token();
     let video_token = image_download::token();
+    let adblock_token = image_download::token();
     let builder = WebviewBuilder::new(label, WebviewUrl::External(initial_browser_url(&initial_url)))
         .focused(focused)
+        .initialization_script_for_all_frames(adblock::script(&adblock_token))
         .initialization_script_for_all_frames(image_download::script(&image_token))
         .initialization_script_for_all_frames(video_download::script(&video_token))
         .on_navigation(move |url| {
@@ -1267,6 +1272,7 @@ fn create_browser_view(app: &AppHandle, tab_id: &str, pane: &'static str, bounds
     let window = app.get_window("main").ok_or("Main window is not ready")?;
     let child = window.add_child(builder, LogicalPosition::new(bounds.x, bounds.y),
         LogicalSize::new(bounds.width, bounds.height)).map_err(|error| error.to_string())?;
+    adblock::install(&child, adblock_token)?;
     image_download::install(app, &child, image_token).map_err(|error| error.to_string())?;
     video_download::install(app, &child, video_token).map_err(|error| error.to_string())?;
     browser_download::install(app, &child).map_err(|error| error.to_string())?;
@@ -1289,7 +1295,7 @@ fn create_browser_view(app: &AppHandle, tab_id: &str, pane: &'static str, bounds
         }
     });
     browser_settings::prune(app);
-    if initial_url.scheme() == "data" {
+    if initial_url.as_str() != "about:blank" {
         child.navigate(initial_url).map_err(|error| error.to_string())?;
     }
     Ok(child)
@@ -1323,6 +1329,7 @@ pub fn run() {
         .setup(|app| {
             fullscreen::initialize(app.handle())?;
             browser_settings::initialize(app.handle()).map_err(std::io::Error::other)?;
+            adblock::initialize(app.handle()).map_err(std::io::Error::other)?;
             if let Some(main) = app.get_webview("main") { browser_settings::attach(&main).map_err(std::io::Error::other)?; }
             if let Some(main) = app.get_webview("main") { shortcuts::install(app.handle(), &main, None)?; }
             create_browser_view(app.handle(), "tab-1", "primary",
@@ -1348,6 +1355,7 @@ pub fn run() {
             ai_dock::show_ai_dock_menu, ai_dock::show_ai_dock_editor, ai_dock::get_ai_dock_editor, ai_dock::close_ai_dock_editor,
             browser_settings::toggle_browser_settings, browser_settings::close_browser_settings,
             browser_settings::get_browser_settings, browser_settings::set_keep_history, browser_settings::clear_browser_data,
+            browser_settings::set_adblock_enabled,
             browser_settings::open_browser_history, browser_settings::list_browser_history, browser_settings::open_history_url,
             browser_settings::browser_settings_ready
         ])
@@ -1509,7 +1517,7 @@ mod tests {
         let offline = make_custom_error_url("http://localhost:7860", "ERR_CONNECTION_REFUSED");
         assert_eq!(initial_browser_url(&offline).as_str(), "about:blank");
         let online = Url::parse("http://localhost:8188/").unwrap();
-        assert_eq!(initial_browser_url(&online), online);
+        assert_eq!(initial_browser_url(&online).as_str(), "about:blank");
     }
 
     #[test]

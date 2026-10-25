@@ -47,12 +47,14 @@ impl Anchor {
 }
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(default)]
 pub struct Settings {
     keep_history: bool,
+    adblock_enabled: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
-        Self { keep_history: true }
+        Self { keep_history: true, adblock_enabled: true }
     }
 }
 fn settings_file(app: &AppHandle) -> Result<PathBuf, String> {
@@ -103,6 +105,7 @@ pub fn initialize(app: &AppHandle) -> Result<(), String> {
         Settings::default()
     };
     KEEP_HISTORY.store(settings.keep_history, Ordering::SeqCst);
+    crate::adblock::set_enabled(settings.adblock_enabled);
     Ok(())
 }
 pub fn attach(webview: &tauri::Webview) -> Result<(), String> {
@@ -284,6 +287,7 @@ pub fn get_browser_settings(webview: tauri::Webview) -> Result<Settings, String>
     authorize(&webview)?;
     Ok(Settings {
         keep_history: KEEP_HISTORY.load(Ordering::SeqCst),
+        adblock_enabled: crate::adblock::enabled(),
     })
 }
 #[tauri::command]
@@ -296,6 +300,7 @@ pub async fn set_keep_history(
     let _lock = OPERATION.lock().await;
     let settings = Settings {
         keep_history: enabled,
+        adblock_enabled: crate::adblock::enabled(),
     };
     let path = settings_file(&app)?;
     // Persist OFF before clearing, so a crash cannot re-enable retention.
@@ -309,6 +314,22 @@ pub async fn set_keep_history(
         app.emit("browser-history-cleared", ())
             .map_err(|e| e.to_string())?;
     }
+    Ok(settings)
+}
+#[tauri::command]
+pub async fn set_adblock_enabled(
+    app: AppHandle,
+    webview: tauri::Webview,
+    enabled: bool,
+) -> Result<Settings, String> {
+    authorize(&webview)?;
+    let _lock = OPERATION.lock().await;
+    let settings = Settings { keep_history: KEEP_HISTORY.load(Ordering::SeqCst), adblock_enabled: enabled };
+    write_json(&settings_file(&app)?, &settings)?;
+    crate::adblock::set_enabled(enabled);
+    crate::adblock::notify_views(&app);
+    crate::adblock::refresh();
+    app.emit("browser-settings-changed", &settings).map_err(|e| e.to_string())?;
     Ok(settings)
 }
 #[tauri::command]
@@ -495,7 +516,7 @@ pub async fn toggle_browser_settings(
         .map_err(|e| e.to_string())?
         .to_logical::<f64>(scale);
     let width = 350_f64.min(size.width);
-    let height = 440_f64.min(size.height);
+    let height = 530_f64.min(size.height);
     let x = origin.x + (anchor.x + anchor.width - width).clamp(0.0, (size.width - width).max(0.0));
     let y = origin.y + (anchor.y + anchor.height + 4.0).clamp(0.0, (size.height - height).max(0.0));
     *ANCHOR.lock().unwrap() = Some(anchor);
@@ -642,16 +663,24 @@ mod tests {
             crate::image_download::token()
         ));
         let path = root.join("browser-settings.json");
-        for keep_history in [false, true, false] {
-            write_json(&path, &Settings { keep_history }).unwrap();
-            assert_eq!(
-                serde_json::from_slice::<Settings>(&std::fs::read(&path).unwrap())
-                    .unwrap()
-                    .keep_history,
-                keep_history
-            );
+        for (keep_history, adblock_enabled) in [(false, true), (true, false), (false, false)] {
+            write_json(&path, &Settings { keep_history, adblock_enabled }).unwrap();
+            let saved = serde_json::from_slice::<Settings>(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!((saved.keep_history, saved.adblock_enabled), (keep_history, adblock_enabled));
         }
         assert!(!path.with_extension("json.tmp").exists());
         std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn adblock_settings_migrate_old_profiles_and_preserve_independent_preferences() {
+        let old: Settings = serde_json::from_str(r#"{"keepHistory":false}"#).unwrap();
+        assert!(!old.keep_history); assert!(old.adblock_enabled);
+        let defaults: Settings = serde_json::from_str("{}").unwrap();
+        assert!(defaults.keep_history && defaults.adblock_enabled);
+        for (keep_history, adblock_enabled) in [(true, false), (false, true), (false, false)] {
+            let before = Settings { keep_history, adblock_enabled };
+            let after: Settings = serde_json::from_slice(&serde_json::to_vec(&before).unwrap()).unwrap();
+            assert_eq!((after.keep_history, after.adblock_enabled), (keep_history, adblock_enabled));
+        }
     }
 }

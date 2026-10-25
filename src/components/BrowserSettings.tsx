@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { Check, Clock, Cookie, Eraser, LoaderCircle, LogOut, Settings, X } from 'lucide-react';
+import { Check, Clock, Cookie, Eraser, LoaderCircle, LogOut, Settings, ShieldCheck, X } from 'lucide-react';
 
-interface SettingsData { keepHistory: boolean }
+interface SettingsData { keepHistory: boolean; adblockEnabled: boolean }
 type Cleanup = 'history' | 'cookies' | 'sessions';
 const actions: { id: Cleanup; label: string; description: string; icon: typeof Clock }[] = [
   { id: 'history', label: 'Clear browser history', description: 'Visited URLs and download records. Keeps logins, cookies and downloaded files.', icon: Eraser },
@@ -31,7 +31,7 @@ export function BrowserSettingsButton() {
 
 export function BrowserSettingsWindow() {
   const [settings, setSettings] = useState<SettingsData>();
-  const [busy, setBusy] = useState<Cleanup | 'toggle' | null>(null);
+  const [busy, setBusy] = useState<Cleanup | 'toggle' | 'adblock' | null>(null);
   const [done, setDone] = useState<Partial<Record<Cleanup, boolean>>>({});
   const [error, setError] = useState('');
   const timers = useRef<Partial<Record<Cleanup, ReturnType<typeof setTimeout>>>>({});
@@ -62,8 +62,21 @@ export function BrowserSettingsWindow() {
     catch (e) { setError(String(e)); try { setSettings(await invoke<SettingsData>('get_browser_settings')); } catch { /* Keep the original error visible. */ } }
     finally { locked.current = false; setBusy(null); }
   };
+  const toggleAdblock = async () => {
+    if (!settings || locked.current) return;
+    locked.current = true; setBusy('adblock'); setError('');
+    try { setSettings(await invoke<SettingsData>('set_adblock_enabled', { enabled: !settings.adblockEnabled })); }
+    catch (e) { setError(String(e)); try { setSettings(await invoke<SettingsData>('get_browser_settings')); } catch { /* Keep the original error visible. */ } }
+    finally { locked.current = false; setBusy(null); }
+  };
   return <section role="dialog" aria-label="Browser settings" className="h-screen overflow-auto rounded-md border border-[#374151] bg-[#111923] p-2 text-gray-200 text-xs" onKeyDown={(event) => { if (event.key === 'Escape') close(); }}>
     <header className="flex items-center justify-between px-2 pb-1"><span className="font-semibold">Settings</span><button onClick={close} title="Close settings" className="p-1 rounded hover:bg-white/10"><X className="w-3.5 h-3.5" /></button></header>
+    <button role="switch" aria-label="Ad blocking" aria-checked={settings?.adblockEnabled ?? true} disabled={!settings || !!busy} onClick={() => { void toggleAdblock(); }} className="flex w-full items-start gap-3 rounded p-2.5 text-left hover:bg-white/5 disabled:opacity-60">
+      <ShieldCheck className="w-4 h-4 mt-0.5 shrink-0 text-emerald-400" />
+      <span className="flex-1"><span className="block font-medium">Ad blocking</span><span className="block text-gray-400 text-[11px] leading-4 mt-1">Blocks ads and trackers. Reload pages after changing. Local AI apps are excluded.</span></span>
+      <span className={`relative shrink-0 w-8 h-[18px] mt-0.5 rounded-full transition-colors ${(settings?.adblockEnabled ?? true) ? 'bg-emerald-600' : 'bg-gray-600'}`}><span className={`absolute top-0.5 left-0.5 h-3.5 w-3.5 rounded-full bg-white transition-transform ${(settings?.adblockEnabled ?? true) ? 'translate-x-3.5' : ''}`} /></span>
+    </button>
+    <div className="my-1 border-t border-[#293545]" />
     <button onClick={() => { void invoke('open_browser_history').catch((e) => setError(String(e))); }} className="flex items-center gap-3 w-full p-2.5 rounded hover:bg-white/5 text-left"><Clock className="w-4 h-4 text-cyan-400" /><span>History</span><span className="ml-auto text-gray-500">View visited pages</span></button>
     <div className="my-1 border-t border-[#293545]" />
     {actions.map(({ id, label, description, icon: Icon }) => <button key={id} disabled={!!busy} onClick={() => { void run(id); }}

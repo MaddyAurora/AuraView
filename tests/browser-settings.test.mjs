@@ -17,8 +17,8 @@ function harness() {
   };
   const invoke = (command, args) => {
     calls.push({ command, args });
-    if (command === 'get_browser_settings') return Promise.resolve({ keepHistory: true });
-    if (command === 'clear_browser_data' || command === 'set_keep_history') return new Promise((resolve, reject) => pending.push({ resolve, reject }));
+    if (command === 'get_browser_settings') return Promise.resolve({ keepHistory: true, adblockEnabled: true });
+    if (command === 'clear_browser_data' || command === 'set_keep_history' || command === 'set_adblock_enabled') return new Promise((resolve, reject) => pending.push({ resolve, reject }));
     return Promise.resolve();
   };
   const output = { exports: {} };
@@ -85,9 +85,31 @@ test('history retention changes only after native confirmation and History opens
     h.button('Keep URL history').props.onClick();
     assert.deepEqual(h.calls.at(-1), { command: 'set_keep_history', args: { enabled: false } });
     assert.equal(h.button('Keep URL history').props['aria-checked'], true);
-    h.pending.shift().resolve({ keepHistory: false }); await settle();
+    h.pending.shift().resolve({ keepHistory: false, adblockEnabled: true }); await settle();
     assert.equal(h.button('Keep URL history').props['aria-checked'], false);
     h.button('View visited pages').props.onClick(); await settle();
     assert.equal(h.calls.at(-1).command, 'open_browser_history');
+  } finally { h.dispose(); }
+});
+
+test('ad blocking starts enabled and changes only after a successful native save', async () => {
+  const h = harness();
+  try {
+    h.render(); await settle();
+    assert.equal(h.button('Ad blocking').props['aria-checked'], true);
+    h.button('Ad blocking').props.onClick();
+    assert.deepEqual(h.calls.at(-1), { command: 'set_adblock_enabled', args: { enabled: false } });
+    assert.equal(h.button('Ad blocking').props['aria-checked'], true);
+    assert.equal(h.button('Keep URL history').props.disabled, true);
+    // A rapid second click cannot start another mutation.
+    h.button('Ad blocking').props.onClick();
+    assert.equal(h.pending.length, 1);
+    h.pending.shift().resolve({ keepHistory: true, adblockEnabled: false }); await settle();
+    assert.equal(h.button('Ad blocking').props['aria-checked'], false);
+    assert.equal(h.button('Keep URL history').props['aria-checked'], true);
+    h.button('Ad blocking').props.onClick();
+    h.pending.shift().reject(new Error('Settings could not be saved')); await settle();
+    assert.match(h.text(h.nodes(node => node.props.role === 'alert')[0]), /could not be saved/);
+    assert.equal(h.button('Ad blocking').props.disabled, false);
   } finally { h.dispose(); }
 });

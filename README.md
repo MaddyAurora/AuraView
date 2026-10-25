@@ -61,6 +61,25 @@ Modern browsers like Chrome and Edge frequently consume **1 GB to 3+ GB of RAM**
 - **Toolbar visibility:** The bookmarks bar and AI Dock independently remember whether they are
   shown or hidden across app restarts, including AI Dock changes made with its keyboard shortcut.
   Clearing browser history, cookies, or login sessions preserves these preferences.
+- **Built-in ad blocking:** Enabled by default, with a persistent **Ad blocking** switch in the
+  gear Settings menu. Uses Brave's native Rust filtering engine with EasyList and EasyPrivacy to
+  block ad/tracker requests and hide matching page elements, including dynamically added ads
+  and embedded frames. Local AI apps and private-network resources are excluded. Reload pages
+  after changing the setting to restore previously blocked resources or remove already-loaded ads.
+  Bundled lists work offline; validated HTTPS updates run in the background at most daily while
+  enabled. Failed updates keep existing protection. YouTube player responses and Instagram feed
+  responses also receive site-specific filtering before page scripts consume them, including
+  initial page data and later fetch/XHR requests. Recognized YouTube ad placements and Instagram
+  sponsored entries are removed while ordinary video metadata, posts and login cookies are kept.
+  Instagram sponsored labels have a DOM fallback; recycled ordinary posts become visible again.
+  YouTube's visible Skip ad controls are used only while its player explicitly reports an ad.
+  Embedded sponsorships inside a creator's video and all server-side ad variants are not covered.
+  This is an independent blocker, not full
+  uBlock Origin: uBO scriptlets, procedural filters, the dynamic firewall, worker-only traffic,
+  and WebSocket filtering are not included. WebView2 can also omit deeply nested cross-origin
+  requests from its interception event ([upstream issue](https://github.com/MicrosoftEdge/WebView2Feedback/issues/5765));
+  cosmetic hiding still works in those frames. Some video ads and anti-adblock systems can remain.
+  Sources, licenses, and scope: [ad blocking notices](src-tauri/resources/adblock/NOTICE.md).
 - **Settings and history:** Click the gear to the right of **Split**. **History** opens a searchable
   page of visited URLs and titles, newest first, with local date/time stamps and older/newer pages.
   **Clear browser history** removes visited URLs and native download records plus completed entries

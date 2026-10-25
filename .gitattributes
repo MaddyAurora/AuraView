@@ -1,0 +1,3 @@
+# Preserve upstream filter snapshots, including whitespace in their comments.
+src-tauri/resources/adblock/easylist.txt text eol=lf whitespace=-blank-at-eol
+src-tauri/resources/adblock/easyprivacy.txt text eol=lf whitespace=-blank-at-eol
