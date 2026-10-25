@@ -1,6 +1,6 @@
 # 🌌 AuraView
 
-> **A lightweight, high-performance custom browser designed for entertainment, local servers hub, with image and video download features.**
+> **A lightweight, high-performance custom browser designed for entertainment, local servers hub, featuring image and video downloader.**
 
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2.2-blue?logo=tauri)](https://v2.tauri.app/)
 [![React](https://img.shields.io/badge/React-18-61dafb?logo=react)](https://react.dev/)
@@ -15,18 +15,13 @@ AuraView is designed to offer a fast, lightweight browsing experience without th
 
 Built with Tauri v2 and Microsoft Edge WebView2, it is especially useful for running local AI interfaces, watching media, and multitasking.
 
-* **Minimal Footprint:** Typically uses around 30–60 MB RAM when idle.
-* **Instant Port Navigation:** Quickly access ComfyUI, Gradio, Ollama, and other local servers.
-* **Video & Media Accelerated:** Smooth video playback using your GPU.
-* **Video and Image downloader** Features buttons to the right of images and videos for quick download, with resolution selector or audio only download.
-
 ---
 
 ## ✨ Features
 
 - 🚀 **Local Hub:** Quickly launch local AI services using customizable shortcuts, ports, and drag-and-drop ordering.
 - 🪟 **Side-by-Side Split View:** Browse two websites side by side in the same tab.
-- **Media Downloader:** Download images and videos directly from supported websites, including embedded media with the available resolutions selector or audio mp3 download only.
+- **Media Downloader:** Download images and videos directly from supported websites, including embedded media with a resolution selector or audio mp3 download only.
 - **Downloads Manager:** Track downloads, monitor progress, cancel or resume transfers, and manage downloaded files.
 - **Built-in Ad Blocking:** Blocks many ads and trackers using Brave's filtering engine, EasyList, and EasyPrivacy.
 - **Bookmarks:** Organize your favorite websites into folders, with Chrome and Edge import/export support.
