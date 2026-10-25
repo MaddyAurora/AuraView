@@ -2,6 +2,11 @@ name: Build and Release AuraView
 
 on:
   workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Release tag (e.g. v0.3.4); leave blank for a test build'
+        required: false
+        type: string
   push:
     tags:
       - 'v*'
@@ -30,6 +35,17 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Validate release version
+        if: inputs.release_version != ''
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ($env:RELEASE_VERSION -ne "v$version") {
+            throw "Release tag must be v$version (received $env:RELEASE_VERSION)"
+          }
+
       - name: Build Windows EXE and MSI installers
         run: npm run tauri -- build --bundles nsis,msi
 
@@ -44,15 +60,15 @@ jobs:
           retention-days: 30
 
       - name: Publish GitHub Release for version tags
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.release_version != ''
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.release_version || github.ref_name }}
         run: |
           $files = @(
             Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe" | ForEach-Object FullName
             Get-ChildItem "src-tauri/target/release/bundle/msi/*.msi" | ForEach-Object FullName
           )
           if ($files.Count -lt 2) { throw "Expected both EXE and MSI installers." }
-          gh release create "$env:TAG" $files --title "AuraView $env:TAG" --notes-file ".github/RELEASE_NOTES.md" --verify-tag
+          gh release create "$env:TAG" $files --title "AuraView $env:TAG" --notes-file ".github/RELEASE_NOTES.md" --target "$env:GITHUB_SHA"
