@@ -177,19 +177,16 @@ export const TabBar: React.FC<TabBarProps> = ({
       onDoubleClick={handleToggleMaximize}
       data-tauri-drag-region
     >
-      {/* Brand Icon & Name */}
+      {/* Brand name */}
       <div
         className="flex items-center px-2.5 py-1 text-xs font-semibold tracking-wider text-purple-400 shrink-0 cursor-default"
         onMouseDown={handleStartDrag}
         onDoubleClick={handleToggleMaximize}
         data-tauri-drag-region
       >
-        <div className="w-4 h-4 rounded-full bg-gradient-to-tr from-purple-600 to-cyan-400 flex items-center justify-center shadow-sm shadow-purple-500/30 pointer-events-none">
-          <div className="w-1.5 h-1.5 rounded-full bg-[#090c10]"></div>
-        </div>
         <span ref={brandTitleRef} data-brand-title-hidden={Boolean(tabSizes.hideTitle)} aria-hidden={Boolean(tabSizes.hideTitle)}
           className="shrink-0 overflow-hidden pointer-events-none" style={{ width: tabSizes.hideTitle ? 0 : undefined }}>
-          <span className="inline-block whitespace-nowrap pl-2 bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent font-bold tracking-tight">
+          <span className="inline-block whitespace-nowrap bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent font-bold tracking-tight">
             AuraView
           </span>
         </span>

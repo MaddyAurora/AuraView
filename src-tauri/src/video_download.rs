@@ -197,6 +197,8 @@ fn site(host: &str) -> &str {
         "youtube.com"
     } else if host == "instagram.com" || host.ends_with(".instagram.com") {
         "instagram.com"
+    } else if host == "reddit.com" || host.ends_with(".reddit.com") {
+        "reddit.com"
     } else if matches!(host, "x.com" | "twitter.com")
         || host.ends_with(".x.com")
         || host.ends_with(".twitter.com")
@@ -541,6 +543,14 @@ async fn try_direct(app: &AppHandle, view: &tauri::Webview, task: &Arc<Task>, wo
                 let audio = convert_mp3(&tools, &file_copy, file_copy.parent().unwrap(), &task_copy)?;
                 task_copy.update(&app_copy, "saving", "Saving MP3…", 0, None);
                 return publish(&audio, &downloads, &task_copy.request.title, "mp3", &task_copy);
+            }
+            if ext != "mp4" && http_url(&task_copy.source)
+                .is_some_and(|u| site(u.host_str().unwrap_or("")) == "reddit.com") {
+                task_copy.update(&app_copy, "merging", "Converting video to MP4…", 0, None);
+                let video = convert_mp4(&tools, &file_copy, file_copy.parent().unwrap(), &task_copy)?;
+                verify_stream_duration(&tools, &video, &task_copy)?;
+                task_copy.update(&app_copy, "saving", "Saving video…", 0, None);
+                return publish(&video, &downloads, &task_copy.request.title, "mp4", &task_copy);
             }
             task_copy.update(&app_copy, "saving", "Saving video…", 0, None);
             publish(&file_copy, &downloads, &task_copy.request.title, ext, &task_copy)
@@ -1165,6 +1175,30 @@ fn extract_video(
             }
         }
     }
+    // A playlist taken from the selected Reddit player is more direct than
+    // Reddit's post API, which may reject even an authenticated browser.
+    let reddit_player_playlist = url.and_then(http_url)
+        .is_some_and(|u| site(u.host_str().unwrap_or("")) == "reddit.com")
+        && task.request.streams.len() == 1
+        && task.request.streams[0].kind == "manifest"
+        && http_url(&task.request.streams[0].url).is_some_and(|u| {
+            u.scheme() == "https" && u.host_str() == Some("v.redd.it")
+                && (u.path().ends_with("/HLSPlaylist.m3u8") || u.path().ends_with("/DASHPlaylist.mpd"))
+        });
+    if reddit_player_playlist {
+        let directory = work.0.join("stream");
+        std::fs::create_dir(&directory).map_err(|e| e.to_string())?;
+        match extract_one(app, task, &tools, &directory, downloads,
+            Some(&task.request.streams[0].url), cookies, agent, None) {
+            Ok(path) => return Ok(path),
+            Err(error) => {
+                task.check()?;
+                if error.contains("protected") || error.contains("Live-stream") || task.has_selection() {
+                    return Err(error);
+                }
+            }
+        }
+    }
     let mut primary_error = None;
     if let Some(url) = url {
         let directory = work.0.join("primary");
@@ -1193,7 +1227,12 @@ fn extract_video(
             }
         }
     }
-    if task.request.streams.is_empty() {
+    if task.request.streams.is_empty() || reddit_player_playlist {
+        if url.and_then(http_url)
+            .is_some_and(|u| site(u.host_str().unwrap_or("")) == "reddit.com")
+            && primary_error.as_deref().is_some_and(|error| error.contains("login or verification")) {
+            return Err("Reddit blocked the video lookup, and AuraView could not identify the playing stream. Signing in to Reddit may help; you can also open the post, play it briefly, and retry.".into());
+        }
         return Err(primary_error.unwrap_or_else(|| {
             "Could not identify the media currently playing. Play the video briefly and retry."
                 .into()
@@ -1285,7 +1324,10 @@ fn extract_one(
     let mut info = if let Some(info) = supplied {
         metadata(info)?
     } else {
-        run_tool(&tools.join("yt-dlp.exe"), &probe_args, task, |line| {
+        let reddit_probe = url.and_then(http_url)
+            .is_some_and(|u| site(u.host_str().unwrap_or("")) == "reddit.com");
+        run_tool_with_timeout(&tools.join("yt-dlp.exe"), &probe_args, task,
+            if reddit_probe { 30 } else { 180 }, |line| {
             if line.starts_with('{') {
                 metadata_json = line.into();
             }
@@ -1294,10 +1336,14 @@ fn extract_one(
     };
     let mp3 = choose_resolution(app, task, &mut info)?;
     if mp3 { audio_download_args(&mut info, &mut args)?; }
-    let title = info["title"]
+    let reddit = http_url(&task.source)
+        .is_some_and(|u| site(u.host_str().unwrap_or("")) == "reddit.com");
+    let title = if reddit && fallback && !task.request.title.trim().is_empty() {
+        task.request.title.clone()
+    } else { info["title"]
         .as_str()
         .unwrap_or(&task.request.title)
-        .to_string();
+        .to_string() };
     let info_path = work.join("video.json");
     std::fs::write(
         &info_path,
@@ -1372,8 +1418,33 @@ fn extract_one(
     if fallback {
         verify_stream_duration(tools, &file, task)?;
     }
+    if reddit && ext != "mp4" {
+        task.update(app, "merging", "Converting video to MP4…", 0, None);
+        let converted = convert_mp4(tools, &file, work, task)?;
+        if fallback { verify_stream_duration(tools, &converted, task)?; }
+        task.update(app, "saving", "Saving video…", 0, None);
+        return publish(&converted, downloads, &title, "mp4", task);
+    }
     task.update(app, "saving", "Saving video…", 0, None);
     publish(&file, downloads, &title, ext, task)
+}
+
+fn convert_mp4(tools: &Path, input: &Path, work: &Path, task: &Task) -> Result<PathBuf, String> {
+    task.check()?;
+    let had_audio = probe_video(tools, input, task)?;
+    let output = work.join("converted-video.mp4");
+    run_tool(&tools.join("ffmpeg.exe"), &[
+        "-nostdin".into(), "-y".into(), "-i".into(), input.to_string_lossy().into_owned(),
+        "-map".into(), "0:v:0".into(), "-map".into(), "0:a:0?".into(),
+        "-c:v".into(), "libx264".into(), "-pix_fmt".into(), "yuv420p".into(),
+        "-c:a".into(), "aac".into(), "-movflags".into(), "+faststart".into(),
+        "-f".into(), "mp4".into(), output.to_string_lossy().into_owned(),
+    ], task, |_| {})?;
+    let has_audio = probe_video(tools, &output, task)?;
+    if had_audio && !has_audio { return Err("The converted video is missing its audio".into()); }
+    task.check()?;
+    std::fs::remove_file(input).map_err(|e| e.to_string())?;
+    Ok(output)
 }
 
 fn convert_mp3(tools: &Path, input: &Path, work: &Path, task: &Task) -> Result<PathBuf, String> {
@@ -1469,6 +1540,15 @@ fn run_tool<F: FnMut(&str)>(
     program: &Path,
     args: &[String],
     task: &Task,
+    line: F,
+) -> Result<(), String> {
+    run_tool_with_timeout(program, args, task, 180, line)
+}
+fn run_tool_with_timeout<F: FnMut(&str)>(
+    program: &Path,
+    args: &[String],
+    task: &Task,
+    inactivity_seconds: u64,
     mut line: F,
 ) -> Result<(), String> {
     use std::{
@@ -1542,7 +1622,8 @@ fn run_tool<F: FnMut(&str)>(
     let mut failed = false;
     loop {
         if task.check().is_err()
-            || last_activity.elapsed() > Duration::from_secs(180)
+            || last_activity.elapsed() > Duration::from_secs(inactivity_seconds)
+            || (inactivity_seconds == 30 && start.elapsed() > Duration::from_secs(30))
             || start.elapsed() > Duration::from_secs(24 * 3600)
         {
             failed = true;
@@ -2006,6 +2087,35 @@ mod tests {
         }
     }
     #[test]
+    fn reddit_mp4_conversion_preserves_audio_and_cleans_cached_source() {
+        let tools = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/download-tools");
+        if !tools.join("ffmpeg.exe").exists() { return; }
+        let sample = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/download-sample.mp4");
+        let cache = WorkDir::new(&std::env::temp_dir()).unwrap();
+        let input = cache.0.join("download.mkv");
+        let task = task();
+        run_tool(&tools.join("ffmpeg.exe"), &[
+            "-nostdin".into(), "-y".into(), "-i".into(), sample.to_string_lossy().into_owned(),
+            "-c".into(), "copy".into(), input.to_string_lossy().into_owned(),
+        ], &task, |_| {}).unwrap();
+        assert!(probe_video(&tools, &input, &task).unwrap());
+        let converted = convert_mp4(&tools, &input, &cache.0, &task).unwrap();
+        assert!(!input.exists(), "the temporary source is removed after successful conversion");
+        assert!(probe_video(&tools, &converted, &task).unwrap(), "audio must survive conversion");
+        let mut info = String::new();
+        run_tool(&tools.join("ffprobe.exe"), &[
+            "-v".into(), "error".into(), "-show_entries".into(), "stream=codec_name,codec_type".into(),
+            "-of".into(), "json".into(), converted.to_string_lossy().into_owned(),
+        ], &task, |line| info.push_str(line)).unwrap();
+        let streams: Value = serde_json::from_str(&info).unwrap();
+        let streams = streams["streams"].as_array().unwrap();
+        assert!(streams.iter().any(|s| s["codec_type"] == "video" && s["codec_name"] == "h264"));
+        assert!(streams.iter().any(|s| s["codec_type"] == "audio" && s["codec_name"] == "aac"));
+        let downloads = cache.0.join("Downloads");
+        let saved = publish(&converted, &downloads, "Reddit post title", "mp4", &task).unwrap();
+        assert_eq!(saved.file_name().unwrap(), "Reddit post title.mp4");
+    }
+    #[test]
     fn instagram_stories_resolve_only_the_selected_video_and_keep_existing_routes_separate() {
         let url = "https://www.instagram.com/stories/creator/3994261805935619921/?from=home";
         let id = instagram_story_target(url).unwrap().1.unwrap();
@@ -2066,6 +2176,14 @@ mod tests {
         request.streams[0].url = "https://cdn.example/file.mp4".into();
         request.streams[0].kind = "script".into();
         assert!(!validate(&request, "https://twitter.com/home"));
+    }
+    #[test]
+    fn reddit_post_permalinks_accept_reddit_aliases_but_not_lookalikes() {
+        let mut request = task().request.clone();
+        request.page_url = "https://www.reddit.com/comments/1xih92q/".into();
+        assert!(validate(&request, "https://reddit.com/"));
+        assert!(validate(&request, "https://old.reddit.com/r/example/"));
+        assert!(!validate(&request, "https://reddit.com.example.com/"));
     }
     #[test]
     fn separate_source_bound_tracks_keep_audio_and_reject_incomplete_or_wrong_duration() {

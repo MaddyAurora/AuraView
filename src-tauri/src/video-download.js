@@ -103,6 +103,10 @@
         if (id) return `https://www.youtube.com/watch?v=${encodeURIComponent(id)}`;
       }
       if (h === 'youtu.be' && u.pathname.length > 1) return `https://www.youtube.com/watch?v=${encodeURIComponent(u.pathname.slice(1))}`;
+      if (/(^|\.)reddit\.com$/.test(h)) {
+        const post = /^\/(?:r\/[^/]+\/)?comments\/([a-z0-9]+)(?:\/[^/]+)?\/?$/i.exec(u.pathname);
+        if (post) return `https://www.reddit.com/comments/${post[1]}/`;
+      }
       if (/(^|\.)(x|twitter)\.com$/.test(h)) {
         const post = /^\/(?:[^/]+\/status|i\/web\/status|statuses)\/(\d+)(?:\/video\/(\d+))?\/?$/.exec(u.pathname);
         if (post) return `https://x.com/i/status/${post[1]}${post[2] ? `/video/${post[2]}` : ''}`;
@@ -137,15 +141,50 @@
     } catch { /* player internals may change; keep normal extraction available */ }
     return result;
   }
+  function redditPlayerManifest(video) {
+    // Reddit's player exposes its complete playlist on the owning custom
+    // element, even when its video uses a blob and byte-range media requests.
+    // Walk through shadow hosts so a feed never borrows a neighboring player.
+    if (!/(^|\.)reddit\.com$/.test(location.hostname)) return;
+    for (let node = parent(video), depth = 0; node && depth < 32; depth++, node = parent(node)) {
+      if (!node.matches?.('shreddit-player')) continue;
+      try {
+        const url = new URL(node.getAttribute('src') || '', location.href);
+        if (url.protocol === 'https:' && url.hostname === 'v.redd.it' && !url.username && !url.password
+          && /^\/[a-z0-9]+\/(?:HLSPlaylist\.m3u8|DASHPlaylist\.mpd)$/i.test(url.pathname)) {
+          return { url: url.href, kind: 'manifest', mime: '' };
+        }
+      } catch { /* invalid player URL */ }
+      return;
+    }
+  }
+  function redditVideoTitle(video) {
+    if (!/(^|\.)reddit\.com$/.test(location.hostname)) return '';
+    for (let node = parent(video), depth = 0; node && depth < 32; depth++, node = parent(node)) {
+      if (node.matches?.('shreddit-player,shreddit-post')) {
+        const title = node.getAttribute('post-title')?.trim();
+        if (title) return title.slice(0, 1024);
+      }
+    }
+    return mediaLink(location.href) ? document.title.replace(/\s*:\s*r\/[^\s]+\s*$/i, '').trim().slice(0, 1024) : '';
+  }
   function target(video) {
     let url = video.currentSrc || video.src || '', pageUrl = '', ambiguous = false;
     const instagram = /(^|\.)instagram\.com$/.test(location.hostname);
     const twitter = /(^|\.)(x|twitter)\.com$/.test(location.hostname);
+    const reddit = /(^|\.)reddit\.com$/.test(location.hostname);
     // Feed links must belong to this player. Never use the first link on a page.
     for (let scope = parent(video), depth = 0; scope && depth < 32; depth++, scope = parent(scope)) {
       if (scope === document.body || scope === document.documentElement) break;
       const players = scope.querySelectorAll('video');
       if (players.length > 1) { ambiguous = true; break; }
+      // Reddit cards carry their own permalink even when the player and title
+      // are separated by shadow roots or no visible anchor wraps the video.
+      if (reddit && scope.matches('shreddit-post')) {
+        const permalink = scope.getAttribute('permalink');
+        const post = permalink && mediaLink(permalink);
+        if (post) { pageUrl = post; break; }
+      }
       const anchors = [...(scope.matches('a[href]') ? [scope] : []), ...scope.querySelectorAll('a[href]')];
       const links = new Map();
       for (const anchor of anchors) {
@@ -153,6 +192,7 @@
         if (!link) continue;
         if (instagram && !new URL(link).hostname.endsWith('instagram.com')) continue;
         if (twitter && new URL(link).hostname !== 'x.com') continue;
+        if (reddit && new URL(link).hostname !== 'www.reddit.com') continue;
         // Instagram puts both /p/<code>/ timestamps and /reels/<code>/ player
         // links on the same card. They identify one video, not two candidates.
         const path = new URL(link).pathname.split('/');
@@ -163,11 +203,11 @@
       if (links.size > 1) { ambiguous = true; break; }
       // An article is a post boundary. Don't inherit links from a neighboring
       // post merely because this card has no permalink of its own.
-      if ((instagram || twitter) && scope.matches('article')) break;
+      if ((instagram || twitter || reddit) && scope.matches('article,shreddit-post')) break;
     }
     const visible = [...videos].filter(playable);
     if (!pageUrl && !ambiguous && visible.length === 1 && visible[0] === video) {
-      pageUrl = mediaLink(location.href) || (!instagram && !twitter && /^https?:$/.test(location.protocol) ? location.href : '');
+      pageUrl = mediaLink(location.href) || (!instagram && !twitter && !reddit && /^https?:$/.test(location.protocol) ? location.href : '');
     }
     // A YouTube media URL may contain video only; always resolve its watch URL.
     const youtube = /(^|\.)(youtube\.com|youtu\.be)$/.test(location.hostname);
@@ -210,7 +250,7 @@
     // Only the media bound to the current player may identify that download.
     if (ad) pageUrl = '';
     const { poster, playerId } = instagram ? instagramMedia(video) : { poster: '', playerId: '' };
-    return { url, pageUrl, poster, playerId, title: ad ? 'Video advertisement' : video.getAttribute('aria-label') || document.title || 'Video',
+    return { url, pageUrl, poster, playerId, title: ad ? 'Video advertisement' : redditVideoTitle(video) || video.getAttribute('aria-label') || document.title || 'Video',
       key: `${url}\n${pageUrl}\n${poster}\n${playerId}`, youtube, ad: youtube && Boolean(video.closest?.('.ad-showing')), drm: Boolean(video.mediaKeys || encrypted.has(video)), live: video.duration === Infinity };
   }
   function post(payload) { try { send(stringify({ ...payload, token })); } catch { return false; } return true; }
@@ -315,7 +355,8 @@
       states.set(video, state); pending.set(id, { video, state });
       pinned = pending.get(id);
       closeMenu(true);
-      const streams = mediaStreams.hints(video, { singlePlayer: [...videos].filter((v) => v.isConnected).length === 1, boundOnly: info.ad });
+      const redditManifest = redditPlayerManifest(video);
+      const streams = redditManifest ? [redditManifest] : mediaStreams.hints(video, { singlePlayer: [...videos].filter((v) => v.isConnected).length === 1, boundOnly: info.ad });
       if (!post({ kind: 'auraview-video-download', id, url: info.url, pageUrl: info.pageUrl, poster: info.poster, title: info.title,
         instagramVideoId: info.playerId,
         streams, streamOnly: info.ad, duration: Number.isFinite(video.duration) && video.duration > 0 ? video.duration : null })) {
@@ -367,7 +408,7 @@
     icon.setAttribute('d', path);
     button.style.color = state?.status === 'saved' ? '#67e8a4' : state?.status === 'error' ? '#fca5a5' : '#fff';
     button.style.left = `${r.right - 38}px`; button.style.top = `${r.top + 6}px`; button.style.display = 'block';
-    badge.textContent = busy(state?.status) ? (state.percent != null ? `${Math.floor(state.percent)}%` : state.status === 'merging' ? (state.message?.includes('MP3') ? 'Converting…' : 'Merging…') : 'Preparing…') : '';
+    badge.textContent = busy(state?.status) ? (state.percent != null ? `${Math.floor(state.percent)}%` : state.status === 'merging' ? (state.message?.includes('Converting') ? 'Converting…' : 'Merging…') : 'Preparing…') : '';
     badge.style.left = `${r.right - 72}px`; badge.style.top = `${r.top + 42}px`; badge.style.display = badge.textContent && !menuRequest ? 'block' : 'none';
   }
   function schedule(recheck = false) {

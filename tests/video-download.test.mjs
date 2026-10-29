@@ -409,6 +409,51 @@ test('Instagram feed links are resolved within the selected post', () => {
   h.hover(b); h.click(); assert.equal(h.messages[0].pageUrl, 'https://www.instagram.com/p/SECOND/'); assert.equal(h.messages[0].url, b.src);
   h.hover(a); h.click(); assert.equal(h.messages[1].pageUrl, 'https://www.instagram.com/reel/FIRST/');
 });
+
+test('Reddit feed downloads resolve the selected card permalink instead of the home feed', () => {
+  const h = page('https://www.reddit.com/');
+  const first = h.add(new h.Element('shreddit-post')), second = h.add(new h.Element('shreddit-post'));
+  first.setAttribute('permalink', '/r/test/comments/abc123/first/');
+  second.setAttribute('permalink', '/r/nextfuckinglevel/comments/1xih92q/counterfeiter_tale/');
+  first.setAttribute('post-title', 'First post'); second.setAttribute('post-title', 'Counterfeiter Tale');
+  h.video('blob:https://www.reddit.com/first', first);
+  const video = h.video('blob:https://www.reddit.com/selected', second);
+  h.hover(video); h.click();
+  assert.equal(h.messages[0].pageUrl, 'https://www.reddit.com/comments/1xih92q/');
+  assert.equal(h.messages[0].title, 'Counterfeiter Tale');
+});
+
+test('Reddit downloads use the selected player playlist without borrowing a neighboring stream', () => {
+  const h = page('https://www.reddit.com/');
+  const first = h.add(new h.Element('shreddit-player'));
+  first.setAttribute('src', 'https://v.redd.it/first/HLSPlaylist.m3u8');
+  h.video('blob:https://www.reddit.com/first', first);
+  const second = h.add(new h.Element('shreddit-player'));
+  second.setAttribute('src', 'https://v.redd.it/tk6in9815eyh1/HLSPlaylist.m3u8?token=example');
+  const video = h.video('blob:https://www.reddit.com/selected', second);
+  h.hover(video); h.click();
+  assert.deepEqual(JSON.parse(JSON.stringify(h.messages[0].streams)), [{
+    url: 'https://v.redd.it/tk6in9815eyh1/HLSPlaylist.m3u8?token=example', kind: 'manifest', mime: ''
+  }]);
+});
+
+test('Reddit player discovery rejects untrusted or non-playlist player sources', () => {
+  for (const url of ['https://v.redd.it.example.com/id/HLSPlaylist.m3u8', 'https://v.redd.it/id/CMAF_96.mp4', 'http://v.redd.it/id/HLSPlaylist.m3u8']) {
+    const h = page('https://www.reddit.com/'); const player = h.add(new h.Element('shreddit-player'));
+    player.setAttribute('src', url); const video = h.video('blob:https://www.reddit.com/video', player);
+    h.hover(video); h.click(); assert.equal(h.messages[0].streams.length, 0);
+  }
+});
+
+test('Reddit post routes resolve but home and ambiguous cards never use the feed URL', () => {
+  const post = page('https://www.reddit.com/r/test/comments/abc123/title/?context=3');
+  const video = post.video('blob:https://www.reddit.com/video'); post.hover(video); post.click();
+  assert.equal(post.messages[0].pageUrl, 'https://www.reddit.com/comments/abc123/');
+  const home = page('https://www.reddit.com/');
+  const card = home.add(new home.Element('shreddit-post'));
+  const selected = home.video('blob:https://www.reddit.com/video', card);
+  home.hover(selected); home.click(); assert.equal(home.messages[0].pageUrl, '');
+});
 test('ambiguous multi-video feeds never fall back to the entire page', () => {
   const h = page('https://www.instagram.com/'), a = h.video('blob:https://www.instagram.com/a'); h.video('blob:https://www.instagram.com/b');
   h.hover(a); h.click(); assert.equal(h.messages[0].pageUrl, '');
