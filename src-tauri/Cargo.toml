@@ -1,6 +1,6 @@
 [package]
 name = "auraview"
-version = "0.3.4"
+version = "0.3.5"
 description = "AuraView: Lightweight Custom Browser for Local AI Applications"
 authors = ["MaddyAurora"]
 edition = "2021"

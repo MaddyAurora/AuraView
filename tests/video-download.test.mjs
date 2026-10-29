@@ -90,7 +90,7 @@ test('the top-right button targets a paused video and trusted clicks only', () =
   h.click(false); assert.equal(h.messages.length, 0);
   const event = h.click(); assert.equal(event.prevented, true); assert.equal(event.stopped, true);
   assert.equal(h.messages[0].url, v.currentSrc); assert.equal(h.messages[0].token, 'private-video-token');
-  h.hover(new h.Element('p')); assert.equal(h.button.style.display, 'none');
+  h.hover(new h.Element('p')); assert.equal(h.button.style.display, 'block');
 });
 
 test('available resolutions open a persistent dropdown and selecting one sends the exact choice once', () => {
@@ -115,12 +115,11 @@ test('available resolutions open a persistent dropdown and selecting one sends t
   h.click(); assert.equal(h.messages.at(-1).kind, 'auraview-video-cancel');
 });
 
-test('resolution menus cancel on outside click, Escape, navigation, and recycled players', () => {
-  for (const dismiss of ['outside', 'escape', 'navigation', 'recycle']) {
+test('resolution menus cancel on Escape, navigation, and recycled players', () => {
+  for (const dismiss of ['escape', 'navigation', 'recycle']) {
     const h = page(), v = h.video(); h.hover(v); h.click();
     h.result('request-1', 'preparing', { resolutions: [1080, 720] });
     const stale = h.menu.querySelectorAll('button')[0];
-    if (dismiss === 'outside') h.window.fire('pointerdown', { composedPath: () => [v] });
     if (dismiss === 'escape') h.window.fire('keydown', { key: 'Escape', isTrusted: true });
     if (dismiss === 'navigation') h.window.fire('pagehide');
     if (dismiss === 'recycle') { v.currentSrc = v.src = 'https://cdn.example.com/next.mp4'; h.recheck(); }
@@ -212,19 +211,28 @@ test('video overlays hide after three idle seconds and only real pointer movemen
   h.advance(2000); assert.equal(h.button.style.display, 'none');
 });
 
-test('fullscreen, player mutations, and download progress cannot resurrect an idle video button or badge', () => {
-  const h = page('https://www.youtube.com/watch?v=selected'), v = h.video();
-  h.hover(v); h.click(); h.result('request-1', 'downloading', { percent: 20 });
-  assert.equal(h.badge.style.display, 'block');
-  h.advance(3000); assert.equal(h.button.style.display, 'none'); assert.equal(h.badge.style.display, 'none');
-  h.document.fire('fullscreenchange'); h.recheck();
-  h.result('request-1', 'downloading', { percent: 50 });
-  assert.equal(h.button.style.display, 'none'); assert.equal(h.badge.style.display, 'none');
-  h.hover(v, 301, 180); assert.equal(h.button.style.display, 'block'); assert.equal(h.badge.textContent, '50%');
-  h.click(); assert.equal(h.messages.at(-1).kind, 'auraview-video-cancel', 'idle hiding preserves the active download');
-  h.window.fire('pagehide'); assert.equal(h.clock.pending, 0);
-  h.window.fire('pageshow'); h.flush(); assert.equal(h.button.style.display, 'none');
-  h.hover(v, 301, 180); assert.equal(h.button.style.display, 'block');
+test('active download remains visible through pointer movement, idle, outside clicks, and focus changes', () => {
+  const h = page(), v = h.video(), outside = new h.Element('p');
+  h.hover(v); h.click();
+  h.hover(outside, 700, 400); h.advance(4000);
+  h.window.fire('pointerdown', { composedPath: () => [outside] });
+  h.document.fire('focusin', { target: outside }); h.flush();
+  assert.equal(h.button.style.display, 'block');
+  h.result('request-1', 'preparing', { resolutions: [1080, 720] });
+  assert.equal(h.menu.style.display, 'block');
+  h.window.fire('pointerdown', { composedPath: () => [outside] });
+  h.window.fire('blur'); h.flush(); h.advance(4000);
+  assert.equal(h.menu.style.display, 'block');
+  assert.equal(h.button.style.display, 'block');
+  assert.equal(h.messages.length, 1);
+  h.menu.querySelectorAll('button')[1].fire('click', { isTrusted: true }); h.flush();
+  assert.equal(h.messages.at(-1).resolution, 720);
+  h.result('request-1', 'downloading', { percent: 50 }); h.advance(4000);
+  assert.equal(h.button.style.display, 'block'); assert.equal(h.badge.textContent, '50%');
+  h.button.focusVisible = false; h.button.fire('blur'); h.flush();
+  h.result('request-1', 'error');
+  assert.equal(h.button.style.display, 'none', 'failed request returns to ordinary idle visibility');
+  h.hover(v, 301, 180); assert.equal(h.button.style.color, '#fca5a5');
 });
 
 test('keyboard focus on the download action remains usable while ordinary mouse focus still times out', () => {
@@ -296,6 +304,14 @@ test('Instagram story videos resolve the selected numeric story ID', () => {
   const v = h.video('blob:https://www.instagram.com/story');
   h.hover(v); h.click();
   assert.equal(h.messages[0].pageUrl, 'https://www.instagram.com/stories/distrokid/3994261805935619921/');
+});
+
+test('Instagram post players send their own player identity for carousel matching', () => {
+  const h = page('https://www.instagram.com/p/SELECTED/'), v = h.video('blob:https://www.instagram.com/playing');
+  v.__reactFiber$test = { memoizedProps: { coreVideoPlayerMetaData: { videoFBID: '123456', poster: 'https://scontent.cdninstagram.com/selected.jpg' } } };
+  h.hover(v); h.click();
+  assert.equal(h.messages[0].instagramVideoId, '123456');
+  assert.equal(h.messages[0].poster, 'https://scontent.cdninstagram.com/selected.jpg');
 });
 
 test('Home streaming stories send only the owning player poster and recycled players reset their download identity', () => {
@@ -377,7 +393,7 @@ test('recycled feed players do not carry progress or completion into their next 
 test('transparent covers work and opaque dialogs above a video do not', () => {
   const h = page(), box = h.add(new h.Element()), v = h.video(undefined, box), cover = h.add(new h.Element('a'), box);
   h.hover(cover); assert.equal(h.button.style.display, 'block'); h.click(); assert.equal(h.messages[0].url, v.src);
-  cover.setAttribute('role', 'dialog'); h.hover(cover); assert.equal(h.button.style.display, 'none');
+  h.result('request-1', 'error'); cover.setAttribute('role', 'dialog'); h.hover(cover); assert.equal(h.button.style.display, 'none');
 });
 test('the button follows clipping and hides on unloaded, invisible, or tiny players', () => {
   const h = page(), box = h.add(new h.Element()), v = h.video(undefined, box);

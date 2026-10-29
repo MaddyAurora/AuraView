@@ -52,19 +52,19 @@ function harness(hovered = false) {
   return h;
 }
 
-test('a menu left outside the pointer closes after exactly three seconds', () => {
+test('a menu left outside the pointer closes after exactly one second', () => {
   const h = harness();
-  h.advance(2999); assert.deepEqual(h.closed, []);
-  h.advance(1); assert.deepEqual(h.closed, [3000]);
+  h.advance(999); assert.deepEqual(h.closed, []);
+  h.advance(1); assert.deepEqual(h.closed, [1000]);
   h.dispose();
 });
 
-test('entering cancels dismissal and leaving or re-entering starts a fresh three seconds', () => {
+test('entering cancels dismissal and leaving or re-entering starts a fresh one second', () => {
   const h = harness();
-  h.advance(2500); h.enter(); h.advance(10_000);
+  h.advance(500); h.enter(); h.advance(10_000);
   assert.deepEqual(h.closed, []);
-  h.leave(); h.advance(2999); assert.deepEqual(h.closed, []);
-  h.enter(); h.advance(100); h.leave(); h.advance(3000);
+  h.leave(); h.advance(999); assert.deepEqual(h.closed, []);
+  h.enter(); h.advance(100); h.leave(); h.advance(1000);
   assert.equal(h.closed.length, 1);
   h.dispose();
 });
@@ -72,7 +72,7 @@ test('entering cancels dismissal and leaving or re-entering starts a fresh three
 test('opening beneath the pointer and keyboard activity preserve interaction time', () => {
   const h = harness(true);
   h.advance(5000); assert.deepEqual(h.closed, []);
-  h.leave(); h.advance(2500); h.key(); h.advance(2999);
+  h.leave(); h.advance(500); h.key(); h.advance(999);
   assert.deepEqual(h.closed, []);
   h.advance(1); assert.equal(h.closed.length, 1);
   h.dispose();
@@ -81,10 +81,10 @@ test('opening beneath the pointer and keyboard activity preserve interaction tim
 test('metadata changes do not reset the timer, while hiding and unmounting cancel it', () => {
   const h = harness();
   let latestCalled = false;
-  h.advance(2000); h.render(true, () => { latestCalled = true; });
-  h.advance(1000); assert.equal(latestCalled, true);
+  h.advance(500); h.render(true, () => { latestCalled = true; });
+  h.advance(500); assert.equal(latestCalled, true);
   h.render(false); h.advance(5000); assert.deepEqual(h.closed, []);
-  h.render(true); h.advance(2999); assert.deepEqual(h.closed, []);
+  h.render(true); h.advance(999); assert.deepEqual(h.closed, []);
   h.render(false); h.advance(1); assert.deepEqual(h.closed, []);
-  h.render(true); h.dispose(); h.advance(3000); assert.deepEqual(h.closed, []);
+  h.render(true); h.dispose(); h.advance(1000); assert.deepEqual(h.closed, []);
 });

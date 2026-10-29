@@ -557,6 +557,7 @@ async fn extract_download(app: &AppHandle, view: &tauri::Webview, task: &Arc<Tas
     // Story playback can be authenticated even when Instagram rejects the
     // external extractor's webpage lookup. Resolve that exact story in its tab.
     let story = instagram_story(view, task).await.ok();
+    let post = instagram_post(view, task).await.ok();
     task.check()?;
     let url = if !task.request.page_url.is_empty() && !task.request.stream_only {
         Some(task.request.page_url.clone())
@@ -598,6 +599,7 @@ async fn extract_download(app: &AppHandle, view: &tauri::Webview, task: &Arc<Tas
             &cookies_path,
             &user_agent,
             story,
+            post,
         )
     })
     .await
@@ -684,6 +686,27 @@ async fn instagram_story(view: &tauri::Webview, task: &Task) -> Result<Value, St
     info["webpage_url"] = json!(format!(
         "https://www.instagram.com/stories/{username}/{}/", info["id"].as_str().unwrap()
     ));
+    Ok(info)
+}
+
+#[cfg(windows)]
+async fn instagram_post(view: &tauri::Webview, task: &Task) -> Result<Value, String> {
+    let url = http_url(&task.request.page_url).ok_or("Not an Instagram post")?;
+    if !matches!(url.host_str(), Some("instagram.com" | "www.instagram.com")) { return Err("Not an Instagram post".into()); }
+    let parts: Vec<_> = url.path().trim_matches('/').split('/').collect();
+    if parts.len() != 2 || parts[0] != "p" || parts[1].is_empty() || parts[1].len() > 20
+        || !parts[1].bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')) {
+        return Err("Not an Instagram post".into());
+    }
+    let frame = frame(view, &task.source).await?;
+    let world = devtools(view, "Page.createIsolatedWorld", json!({"frameId": frame, "worldName": "AuraView post downloads"})).await?;
+    let context = world["executionContextId"].as_u64().ok_or("Post frame is no longer available")?;
+    let expression = format!("({})({})", include_str!("instagram-post.js"),
+        json!({"shortcode": parts[1], "poster": task.request.poster, "playerId": task.request.instagram_video_id}));
+    let response = devtools(view, "Runtime.evaluate", json!({"contextId": context, "expression": expression, "awaitPromise": true, "returnByValue": true})).await?;
+    task.check()?;
+    let mut info = instagram_story_metadata(&task.request, None, &response["result"]["value"])?;
+    info["extractor"] = json!("AuraView Instagram post");
     Ok(info)
 }
 
@@ -1114,6 +1137,7 @@ fn extract_video(
     cookies: &Path,
     agent: &str,
     story: Option<Value>,
+    post: Option<Value>,
 ) -> Result<PathBuf, String> {
     let tools = tool_dir(app)?;
     if let Some(info) = story {
@@ -1127,6 +1151,17 @@ fn extract_video(
                     || task.has_selection() {
                     return Err(error);
                 }
+            }
+        }
+    }
+    if let Some(info) = post {
+        let directory = work.0.join("instagram-post");
+        std::fs::create_dir(&directory).map_err(|e| e.to_string())?;
+        match extract_one(app, task, &tools, &directory, downloads, None, cookies, agent, Some(info)) {
+            Ok(path) => return Ok(path),
+            Err(error) => {
+                task.check()?;
+                if error.contains("protected") || error.contains("Live-stream") || task.has_selection() { return Err(error); }
             }
         }
     }

@@ -5,7 +5,7 @@
   const send = bridge.postMessage.bind(bridge), stringify = JSON.stringify.bind(JSON);
   const states = new WeakMap(), pending = new Map(), videos = new Set(), encrypted = new WeakSet();
   const mediaStreams = __AURAVIEW_MEDIA_STREAMS__;
-  let host, button, icon, badge, menu, menuRequest, menuKey = '', menuButtons = [], active, focused, observer, resizeObserver, frame = 0, leaving = false, recheckPending = false, x = -1, y = -1;
+  let host, button, icon, badge, menu, menuRequest, menuKey = '', menuButtons = [], active, focused, pinned, observer, resizeObserver, frame = 0, leaving = false, recheckPending = false, x = -1, y = -1;
   let pointerIdle = false, idleTimer = 0;
   function clearIdleTimer() { clearTimeout(idleTimer); idleTimer = 0; }
   function showTemporarily() {
@@ -120,8 +120,7 @@
   }
   function instagramMedia(video) {
     const result = { poster: video.poster || '', playerId: '' };
-    if (!/^\/stories\//.test(location.pathname)) return result;
-    // Instagram's streaming story player keeps its media ID (and sometimes
+    // Instagram's streaming player keeps its media ID (and sometimes
     // poster) in the owning React component. Read only that player's metadata; do
     // not search shared stores, children, or neighboring story components.
     try {
@@ -314,6 +313,7 @@
       const id = crypto.randomUUID(), video = active;
       const state = { ...info, id, status: 'preparing', message: 'Preparing video…' };
       states.set(video, state); pending.set(id, { video, state });
+      pinned = pending.get(id);
       closeMenu(true);
       const streams = mediaStreams.hints(video, { singlePlayer: [...videos].filter((v) => v.isConnected).length === 1, boundOnly: info.ad });
       if (!post({ kind: 'auraview-video-download', id, url: info.url, pageUrl: info.pageUrl, poster: info.poster, title: info.title,
@@ -337,15 +337,22 @@
   function lift() {
     try { if (host.matches(':popover-open')) host.hidePopover(); host.showPopover?.(); } catch { /* older WebView */ }
   }
+  function pinnedVideo() {
+    if (pinned && (!pinned.video.isConnected || target(pinned.video).key !== pinned.state.key
+      || (!busy(pinned.state.status) && pinned.state.status !== 'saved'))) pinned = undefined;
+    return pinned?.video;
+  }
   function render() {
     if (!button) return;
+    const pinnedPlayer = pinnedVideo();
+    if (!active && pinnedPlayer) active = pinnedPlayer;
     if (menuRequest && (!menuRequest.video.isConnected || target(menuRequest.video).key !== menuRequest.state.key)) closeMenu(true);
     if (!active?.isConnected || leaving || document.hidden
-      || (pointerIdle && !menuRequest && !button.matches(':focus-visible'))) {
+      || (pointerIdle && active !== pinnedPlayer && !menuRequest && !button.matches(':focus-visible'))) {
       button.style.display = badge.style.display = menu.style.display = 'none'; return;
     }
     const r = playable(active);
-    if (!r) { closeMenu(true); button.style.display = badge.style.display = 'none'; return; }
+    if (!r) { button.style.display = badge.style.display = menu.style.display = 'none'; return; }
     renderMenu(r);
     const info = target(active), stored = states.get(active), state = stored?.key === info.key ? stored : undefined;
     let title = state?.message || 'Download video';
@@ -366,7 +373,7 @@
   function schedule(recheck = false) {
     recheckPending ||= recheck;
     if (frame || leaving) return;
-    frame = requestAnimationFrame(() => { frame = 0; if (recheckPending && !focused) active = menuRequest?.video || videoAt(); recheckPending = false; render(); });
+    frame = requestAnimationFrame(() => { frame = 0; if (recheckPending && !focused) active = menuRequest?.video || videoAt() || pinnedVideo(); recheckPending = false; render(); });
   }
   function result(payload) {
     if (payload?.kind !== 'auraview-video-result') return;
@@ -375,8 +382,8 @@
     if (!request) return;
     Object.assign(request.state, payload);
     if (payload.status === 'preparing' && (payload.resolutions?.length > 1 || payload.audioOption)
-      && active === request.video && target(request.video).key === request.state.key) {
-      menuRequest = request;
+      && (active === request.video || pinned === request) && target(request.video).key === request.state.key) {
+      menuRequest = request; active = request.video;
     }
     if (menuRequest?.state === request.state && payload.status !== 'preparing') closeMenu();
     if (!busy(payload.status)) pending.delete(payload.id);
@@ -385,9 +392,8 @@
   window.addEventListener('pointermove', (e) => {
     if (!e.isTrusted || e.pointerType === 'touch') return;
     if (x !== e.clientX || y !== e.clientY) showTemporarily();
-    x = e.clientX; y = e.clientY; active = menuRequest?.video || videoAt(e); schedule();
+    x = e.clientX; y = e.clientY; active = menuRequest?.video || videoAt(e) || pinnedVideo(); schedule();
   }, { capture: true, passive: true });
-  window.addEventListener('pointerdown', (e) => { if (menuRequest && !e.composedPath().includes(host)) { closeMenu(true); schedule(); } }, true);
   window.addEventListener('keydown', (e) => {
     if (!menuRequest || !e.isTrusted) return;
     const path = e.composedPath();
@@ -406,9 +412,9 @@
     if (e.composedPath().includes(host)) return;
     focused = e.target instanceof HTMLVideoElement ? e.target : [...videos].find((v) => e.target.contains?.(v) && playable(v));
     if (focused?.matches(':focus-visible')) showTemporarily();
-    active = focused; schedule();
+    active = focused || pinnedVideo(); schedule();
   });
-  function hide() { closeMenu(true); if (focused) return; clearIdleTimer(); pointerIdle = true; active = undefined; x = y = -1; schedule(); }
+  function hide() { if (focused && !pinnedVideo()) return; clearIdleTimer(); pointerIdle = true; active = pinnedVideo(); x = y = -1; schedule(); }
   document.addEventListener('pointerleave', hide);
   window.addEventListener('blur', () => { focused = undefined; hide(); });
   document.addEventListener('scroll', () => schedule(true), { capture: true, passive: true });
@@ -419,7 +425,7 @@
   document.addEventListener('visibilitychange', () => { if (document.hidden) { focused = undefined; hide(); } else schedule(true); });
   window.addEventListener('auraview-video-result', (e) => result({ ...e.detail, kind: 'auraview-video-result' }));
   window.addEventListener('message', (e) => { if (e.source === window.parent && window.parent !== window) result(e.data); });
-  window.addEventListener('pagehide', () => { closeMenu(true); leaving = true; clearIdleTimer(); pointerIdle = true; x = y = -1; focused = undefined; cancelAnimationFrame(frame); frame = 0; pending.clear(); if (button) button.style.display = badge.style.display = 'none'; });
+  window.addEventListener('pagehide', () => { closeMenu(true); leaving = true; clearIdleTimer(); pointerIdle = true; x = y = -1; focused = undefined; cancelAnimationFrame(frame); frame = 0; pending.clear(); pinned = undefined; if (button) button.style.display = badge.style.display = 'none'; });
   window.addEventListener('pageshow', () => { leaving = false; track(document); schedule(true); });
   document.addEventListener('DOMContentLoaded', mount, { once: true });
   mount();
