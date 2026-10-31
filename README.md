@@ -9,6 +9,9 @@
 
 ---
 
+<img width="1278" height="839" alt="AuraView image" src="https://github.com/user-attachments/assets/efcd4a88-e60b-4b0a-b631-5398f7289c13" />
+
+
 ## ⚡ Why AuraView?
 
 AuraView is designed to offer a fast, lightweight browsing experience without the resource overhead of traditional browsers.
