@@ -189,10 +189,10 @@ export function BookmarksBar({ visible, getCurrentPage, onOpen, onDialogChange }
     { id: `delete-folder:${id}`, label: 'Delete folder' },
     ...transferItems,
   ];
-  const chip = 'flex shrink-0 items-center gap-1.5 rounded-md border border-transparent px-2 py-1 text-xs text-gray-300 transition-colors hover:border-[#334155] hover:bg-[#1a2533] hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400';
+  const chip = 'flex shrink-0 items-center gap-1.5 rounded-md border border-transparent px-2 py-1 text-xs text-gray-300 transition-colors hover:border-[var(--av-334155)] hover:bg-[var(--av-1a2533)] hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400';
   return <>
     {visible && <div aria-label="Bookmarks bar" role="toolbar"
-      className="flex shrink-0 items-center gap-2 border-b border-[#1a2533] bg-[#0c1017] px-3 py-1.5 select-none"
+      className="flex shrink-0 items-center gap-2 border-b border-[var(--av-1a2533)] bg-[var(--av-0c1017)] px-3 py-1.5 select-none"
       onContextMenu={(event) => { event.preventDefault(); void showMenu({ x: event.clientX, y: event.clientY, items: [{ id: 'add', label: 'Add current page…', enabled: !initial.error }, ...transferItems] }); }}>
       <div ref={strip} className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto touch-none" {...reorder.events}>
         {reorder.order.map((id) => {

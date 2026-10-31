@@ -11,9 +11,9 @@
   width: 100%;
   margin-top: 6px;
   padding: 9px 10px;
-  border: 1px solid #334155;
+  border: 1px solid var(--av-334155);
   border-radius: 6px;
-  background: #0c1017;
+  background: var(--av-0c1017);
   color: #e4e7eb;
   user-select: text;
 }
@@ -22,12 +22,12 @@
 
 .tab-overflow-list {
   scrollbar-width: thin;
-  scrollbar-color: #475569 #111923;
+  scrollbar-color: var(--av-475569) var(--av-111923);
 }
 .tab-overflow-list::-webkit-scrollbar { width: 7px; }
-.tab-overflow-list::-webkit-scrollbar-track { background: #111923; }
-.tab-overflow-list::-webkit-scrollbar-thumb { background: #475569; border: 2px solid #111923; border-radius: 5px; }
-.tab-overflow-list::-webkit-scrollbar-thumb:hover { background: #64748b; }
+.tab-overflow-list::-webkit-scrollbar-track { background: var(--av-111923); }
+.tab-overflow-list::-webkit-scrollbar-thumb { background: var(--av-475569); border: 2px solid var(--av-111923); border-radius: 5px; }
+.tab-overflow-list::-webkit-scrollbar-thumb:hover { background: var(--av-64748b); }
 
 .browser-tab-strip {
   flex: 0 1 auto;
@@ -162,7 +162,7 @@ body {
   margin: 0;
   padding: 0;
   user-select: none;
-  background-color: #090c10;
+  background-color: var(--av-090c10);
   color: #e4e7eb;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   overflow: hidden;
@@ -175,14 +175,67 @@ body {
 }
 
 ::-webkit-scrollbar-track {
-  background: #0f141b;
+  background: var(--av-0f141b);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #202e3b;
+  background: var(--av-202e3b);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #314457;
+  background: var(--av-314457);
 }
+
+:root {
+  --av-090c10: #090c10;
+  --av-0a0e14: #0a0e14;
+  --av-0c1017: #0c1017;
+  --av-0f141b: #0f141b;
+  --av-111923: #111923;
+  --av-121820: #121820;
+  --av-131b26: #131b26;
+  --av-151e28: #151e28;
+  --av-1a232f: #1a232f;
+  --av-1a2533: #1a2533;
+  --av-1f2937: #1f2937;
+  --av-202e3b: #202e3b;
+  --av-233346: #233346;
+  --av-253244: #253244;
+  --av-263444: #263444;
+  --av-263545: #263545;
+  --av-293545: #293545;
+  --av-314457: #314457;
+  --av-334155: #334155;
+  --av-374151: #374151;
+  --av-475569: #475569;
+  --av-64748b: #64748b;
+}
+:root[data-theme]:not([data-theme="aura"]) {
+  --av-090c10: color-mix(in srgb, var(--theme-base), white 0%);
+  --av-0a0e14: color-mix(in srgb, var(--theme-base), white 2%);
+  --av-0c1017: color-mix(in srgb, var(--theme-base), white 4%);
+  --av-0f141b: color-mix(in srgb, var(--theme-base), white 7%);
+  --av-111923: color-mix(in srgb, var(--theme-base), white 10%);
+  --av-121820: color-mix(in srgb, var(--theme-base), white 10%);
+  --av-131b26: color-mix(in srgb, var(--theme-base), white 11%);
+  --av-151e28: color-mix(in srgb, var(--theme-base), white 13%);
+  --av-1a232f: color-mix(in srgb, var(--theme-base), white 15%);
+  --av-1a2533: color-mix(in srgb, var(--theme-base), white 16%);
+  --av-1f2937: color-mix(in srgb, var(--theme-base), white 18%);
+  --av-202e3b: color-mix(in srgb, var(--theme-base), white 19%);
+  --av-233346: color-mix(in srgb, var(--theme-base), white 21%);
+  --av-253244: color-mix(in srgb, var(--theme-base), white 22%);
+  --av-263444: color-mix(in srgb, var(--theme-base), white 23%);
+  --av-263545: color-mix(in srgb, var(--theme-base), white 24%);
+  --av-293545: color-mix(in srgb, var(--theme-base), white 25%);
+  --av-314457: color-mix(in srgb, var(--theme-base), white 30%);
+  --av-334155: color-mix(in srgb, var(--theme-base), white 35%);
+  --av-374151: color-mix(in srgb, var(--theme-base), white 36%);
+  --av-475569: color-mix(in srgb, var(--theme-base), white 46%);
+  --av-64748b: color-mix(in srgb, var(--theme-base), white 58%);
+}
+
+:root[data-theme]:not([data-theme="aura"]) .text-cyan-400 { color: var(--theme-accent); }
+:root[data-theme]:not([data-theme="aura"]) .text-cyan-300 { color: color-mix(in srgb, var(--theme-accent), white 25%); }
+:root[data-theme]:not([data-theme="aura"]) .hover\:text-cyan-400:hover { color: var(--theme-accent); }

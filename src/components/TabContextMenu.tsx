@@ -44,12 +44,12 @@ export function TabContextMenu({ target, onAction, onDismiss }: Props) {
 
   return createPortal(<div ref={menu} role="menu" aria-label="Tab actions"
     style={{ left: Math.max(0, Math.min(target.x, window.innerWidth - 224)), top: Math.max(0, Math.min(target.y, window.innerHeight - 286)), maxWidth: '100vw', maxHeight: '100vh' }}
-    className="fixed z-50 w-56 overflow-y-auto rounded-lg border border-[#374151] bg-[#111923] p-1 shadow-2xl"
+    className="fixed z-50 w-56 overflow-y-auto rounded-lg border border-[var(--av-374151)] bg-[var(--av-111923)] p-1 shadow-2xl"
     onMouseDown={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
     {tabMenuItems(target).map((item) => <div key={item.action}>
-      {item.separator && <div role="separator" className="my-1 border-t border-[#374151]" />}
+      {item.separator && <div role="separator" className="my-1 border-t border-[var(--av-374151)]" />}
       <button type="button" role="menuitem" disabled={!item.enabled}
-      className="w-full rounded px-3 py-2 text-left text-xs text-gray-200 hover:bg-[#253244] focus:bg-[#253244] focus:outline-none disabled:opacity-40"
+      className="w-full rounded px-3 py-2 text-left text-xs text-gray-200 hover:bg-[var(--av-253244)] focus:bg-[var(--av-253244)] focus:outline-none disabled:opacity-40"
       onClick={() => { onAction(item.action, target.pageId); onDismiss(); }}>{item.label}</button>
     </div>)}
   </div>, document.body);

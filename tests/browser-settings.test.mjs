@@ -27,6 +27,7 @@ function harness() {
   }).outputText;
   const require = (name) => {
     if (name === 'react') return hooks;
+    if (name === '../lib/theme') return { readTheme: () => 'aura', saveTheme: (id) => calls.push({ command: 'saveTheme', id }), themes: [{ id: 'aura', name: 'Aura', base: '#090c10', accent: '#22d3ee' }, { id: 'ocean', name: 'Ocean', base: '#071629', accent: '#38bdf8' }] };
     if (name === 'react/jsx-runtime') return { jsx: (type, props) => React.createElement(type, props), jsxs: (type, props) => React.createElement(type, props) };
     if (name === 'lucide-react') return new Proxy({}, { get: () => () => null });
     if (name === '@tauri-apps/api/core') return { invoke };
@@ -45,6 +46,18 @@ function harness() {
   };
 }
 const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+test('theme picker saves the selected theme and updates its selection', async () => {
+  const h = harness();
+  try {
+    h.render(); await settle();
+    const radio = (name) => h.nodes((node) => node.props.role === 'radio' && node.props['aria-label'] === name)[0];
+    assert.equal(radio('Aura').props['aria-checked'], true);
+    radio('Ocean').props.onClick();
+    assert.deepEqual(h.calls.at(-1), { command: 'saveTheme', id: 'ocean' });
+    assert.equal(radio('Ocean').props['aria-checked'], true);
+  } finally { h.dispose(); }
+});
 
 test('cleanup stays pending until native completion, then turns green for exactly five seconds', async () => {
   const h = harness();

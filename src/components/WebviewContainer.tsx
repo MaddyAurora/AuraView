@@ -123,7 +123,7 @@ export const WebviewContainer: React.FC<WebviewContainerProps> = ({ activeTab, s
     <section key={pane} aria-label={side === 'left' ? 'Left browser pane' : 'Right browser pane'}
       className="flex min-w-0 min-h-0 flex-col basis-0"
       style={{ flexGrow: isSplitActive ? (side === 'left' ? ratio : 1 - ratio) : 1 }}>
-      {isSplitActive && <div className="shrink-0 px-2 py-1.5 bg-[#151e28] border-b border-[#1f2937] text-xs">
+      {isSplitActive && <div className="shrink-0 px-2 py-1.5 bg-[var(--av-151e28)] border-b border-[var(--av-1f2937)] text-xs">
         <AddressBar key={`${activeTab.id}:${pane}`} label={side === 'left' ? 'Left pane' : 'Right pane'} url={tab.url} isLoading={tab.isLoading}
           fillRequest={addressFill?.view.tabId === tabPageView(activeTab, pane).tabId && addressFill.view.pane === tabPageView(activeTab, pane).pane ? addressFill : undefined}
           onFillApplied={onFillApplied}
@@ -132,7 +132,7 @@ export const WebviewContainer: React.FC<WebviewContainerProps> = ({ activeTab, s
           onGoBack={() => onGoBack(pane)} onGoForward={() => onGoForward(pane)}
           onGoHome={() => onNavigate(pane, 'https://www.google.com')} />
       </div>}
-      <div ref={ref} className="relative flex-1 min-h-0 overflow-hidden bg-[#090c10]">
+      <div ref={ref} className="relative flex-1 min-h-0 overflow-hidden bg-[var(--av-090c10)]">
         {isTauri ? <div className="flex h-full items-center justify-center text-gray-500 text-xs pointer-events-none">
           {layoutError ? 'Unable to open the browser pane.' : `Connecting to ${tab.url}...`}
         </div> : <iframe key={`${activeTab.id}:${pane}:${tab.url}:${reloadVersions[`${tabPageView(activeTab, pane).tabId}:${tabPageView(activeTab, pane).pane}`] || 0}`} src={tab.url} title={side === 'left' ? `Left: ${tab.title}` : `Right: ${tab.title}`}

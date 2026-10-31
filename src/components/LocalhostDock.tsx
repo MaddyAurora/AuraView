@@ -102,7 +102,7 @@ export const LocalhostDock: React.FC<LocalhostDockProps> = ({ onOpenServer, onDi
 
   return (
     <>
-    <div role="toolbar" aria-label="Local Hub" onContextMenu={(event) => { void showMenu(event); }} className="bg-[#0c1017] border-b border-[#1a2533] px-4 py-2 flex flex-wrap items-center justify-between gap-3 text-xs select-none">
+    <div role="toolbar" aria-label="Local Hub" onContextMenu={(event) => { void showMenu(event); }} className="bg-[var(--av-0c1017)] border-b border-[var(--av-1a2533)] px-4 py-2 flex flex-wrap items-center justify-between gap-3 text-xs select-none">
       {/* Quick Launch Chips */}
       <div ref={strip} className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto touch-none" {...reorder.events}>
         {reorder.order.map((id) => {
@@ -120,7 +120,7 @@ export const LocalhostDock: React.FC<LocalhostDockProps> = ({ onOpenServer, onDi
             }}
             onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); onOpenServer(aiDockUrl(server)); } }}
             onContextMenu={(event) => { void showMenu(event, server.id); }}
-            className={`group flex shrink-0 items-center gap-2 px-2.5 py-1 rounded-md bg-[#131b26] hover:bg-[#1a2533] border border-[#233346] hover:border-purple-500/60 transition-all shadow-sm ${reorder.draggedId === server.id ? 'cursor-grabbing opacity-60 ring-1 ring-purple-400' : 'cursor-grab'}`}
+            className={`group flex shrink-0 items-center gap-2 px-2.5 py-1 rounded-md bg-[var(--av-131b26)] hover:bg-[var(--av-1a2533)] border border-[var(--av-233346)] hover:border-purple-500/60 transition-all shadow-sm ${reorder.draggedId === server.id ? 'cursor-grabbing opacity-60 ring-1 ring-purple-400' : 'cursor-grab'}`}
             title={`${server.description || server.name} (${aiDockUrl(server)})`}
           >
             <div className="w-2 h-2 rounded-full" style={{ backgroundColor: server.color }} />
@@ -157,7 +157,7 @@ export const LocalhostDock: React.FC<LocalhostDockProps> = ({ onOpenServer, onDi
             placeholder="Port..."
             min="1"
             max="65535"
-            className="w-20 pl-4 pr-2 py-1 rounded bg-[#131b26] border border-[#233346] text-gray-200 text-xs focus:outline-none focus:border-purple-500 font-mono placeholder-gray-600 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+            className="w-20 pl-4 pr-2 py-1 rounded bg-[var(--av-131b26)] border border-[var(--av-233346)] text-gray-200 text-xs focus:outline-none focus:border-purple-500 font-mono placeholder-gray-600 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
           />
         </div>
         <button

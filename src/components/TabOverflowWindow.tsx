@@ -41,12 +41,12 @@ export function TabOverflowWindow() {
     }).catch(console.error);
     return () => { disposed = true; };
   }, [snapshot]);
-  return <div className="h-screen overflow-hidden bg-[#111923]">
+  return <div className="h-screen overflow-hidden bg-[var(--av-111923)]">
     {snapshot ? <TabOverflowMenu key={snapshot.openingId} entries={snapshot.tabs} activeTabId={snapshot.activeTabId} onClose={() => close()}
       autoCloseEnabled={visibleOpening === snapshot.openingId} onAutoClose={() => close(false)}
       onCloseTab={(tabId) => { void invoke('close_overflow_tab', { tabId, requestId: snapshot.requestId }).catch((reason) => setError(String(reason))); }}
       onSelect={(tabId) => { void invoke('select_overflow_tab', { tabId, requestId: snapshot.requestId }).catch((reason) => setError(String(reason))); }} />
       : <button className="p-3 text-xs text-gray-300" onClick={() => close()}>Close tabs menu</button>}
-    {error && <p role="alert" className="absolute bottom-0 bg-[#111923] p-2 text-xs text-red-300">{error}</p>}
+    {error && <p role="alert" className="absolute bottom-0 bg-[var(--av-111923)] p-2 text-xs text-red-300">{error}</p>}
   </div>;
 }

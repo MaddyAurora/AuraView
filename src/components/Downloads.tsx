@@ -108,7 +108,7 @@ export function Downloads({ downloads, onClose, preview = false }: { downloads: 
     void invoke(command, { id }).catch((e) => setError(String(e)))
       .finally(() => setPending((previous) => { const next = { ...previous }; delete next[id]; return next; }));
   };
-  return <section aria-label="Downloads" className="shrink-0 border-b border-[#263444] bg-[#111923] text-gray-200">
+  return <section aria-label="Downloads" className="shrink-0 border-b border-[var(--av-263444)] bg-[var(--av-111923)] text-gray-200">
     <div className="flex items-center justify-between px-4 py-2 text-xs">
       <span className="flex items-center gap-2 font-medium"><Download size={14} /> Downloads <span className="font-normal text-gray-500">{preview ? 'Preview · click Downloads to keep open' : 'Saved to Downloads'}</span></span>
       {!preview && <button onClick={onClose} aria-label="Close downloads" title="Close downloads" className="rounded p-1 text-gray-400 hover:bg-gray-700"><X size={14} /></button>}

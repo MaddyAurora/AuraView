@@ -39,7 +39,7 @@ export function AddressBar({ url, isLoading, canGoBack, canGoForward, onNavigate
     onFillApplied?.(fillRequest.id);
   }, [fillRequest, inputValue, disabled, onFillApplied]);
   const isLocalhost = /https?:\/\/(localhost|127\.0\.0\.1|\[::1\])([:/]|$)/i.test(url);
-  const buttonClass = 'p-1.5 rounded-md hover:bg-[#202e3b] disabled:opacity-30 disabled:hover:bg-transparent transition-colors text-gray-400 hover:text-gray-100';
+  const buttonClass = 'p-1.5 rounded-md hover:bg-[var(--av-202e3b)] disabled:opacity-30 disabled:hover:bg-transparent transition-colors text-gray-400 hover:text-gray-100';
   return (
     <div className="flex flex-1 min-w-0 items-center gap-2">
       <div className="flex items-center gap-1 shrink-0">
@@ -53,7 +53,7 @@ export function AddressBar({ url, isLoading, canGoBack, canGoForward, onNavigate
         const target = resolveAddress(inputValue);
         if (target && !disabled) onNavigate(target);
       }}>
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#0a0e14] border border-[#263545] focus-within:border-purple-500/80 focus-within:ring-1 focus-within:ring-purple-500/50">
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--av-0a0e14)] border border-[var(--av-263545)] focus-within:border-purple-500/80 focus-within:ring-1 focus-within:ring-purple-500/50">
           {isLocalhost ? <Server className="w-3 h-3 text-purple-400 shrink-0" /> : url.startsWith('https://') ? <Lock className="w-3 h-3 text-emerald-400 shrink-0" /> : <Search className="w-3 h-3 text-gray-500 shrink-0" />}
           <input ref={input} type="text" aria-label={`${label} URL`} disabled={disabled} value={inputValue} autoFocus={autoFocus}
             onChange={(event) => setInputValue(event.target.value)}

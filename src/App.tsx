@@ -299,7 +299,7 @@ export function App() {
   }, [isTauri]);
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-[#090c10] text-[#e4e7eb] overflow-hidden select-none">
+    <div className="flex flex-col h-screen w-screen bg-[var(--av-090c10)] text-[#e4e7eb] overflow-hidden select-none">
       <TabBar tabs={tabs} activeTabId={activeTabId} onSelectTab={handleSelectTab}
         onCloseTab={handleCloseTab} onCloseTabPage={handleCloseTabPage} onNewTab={() => handleNewTab()} onSwapTabPages={handleSwapTabPages}
         onMoveTab={handleMoveTab} canReopenTab={Boolean(session.closedTabs?.length)} onTabMenuAction={handleTabMenuAction} />

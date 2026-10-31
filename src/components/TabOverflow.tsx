@@ -100,7 +100,7 @@ export function TabOverflow({ tabs, activeTabId, onSelect, onCloseTab }: Props) 
       aria-haspopup="menu" aria-expanded={open} aria-label={label}
       title={label}
       style={{ width: overflowButtonWidth(tabs.length) - 4 }}
-      className={`ml-1 flex h-8 shrink-0 items-center justify-center gap-1 rounded-md border text-xs tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400 ${activeHidden ? 'border-purple-500/50 bg-purple-500/10 text-purple-300' : 'border-[#263545] text-gray-300 hover:bg-[#1f2937]'}`}
+      className={`ml-1 flex h-8 shrink-0 items-center justify-center gap-1 rounded-md border text-xs tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400 ${activeHidden ? 'border-purple-500/50 bg-purple-500/10 text-purple-300' : 'border-[var(--av-263545)] text-gray-300 hover:bg-[var(--av-1f2937)]'}`}
       onMouseDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}
       onMouseEnter={() => { if (performance.now() - lastClosed.current > 300) timer.current = setTimeout(() => { void show(); }, 180); }}
       onMouseLeave={cancelTimer} onClick={() => {

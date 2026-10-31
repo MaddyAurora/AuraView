@@ -21,7 +21,7 @@ export function BookmarkMenu({ menu, onSelect, onClose, label = 'Bookmarks' }: {
       previous?.focus();
     };
   }, [onClose]);
-  return createPortal(<div ref={ref} role="menu" aria-label={label} className="fixed z-50 max-h-[60vh] w-64 max-w-[calc(100vw-16px)] overflow-y-auto rounded-lg border border-[#374151] bg-[#111923] p-1 shadow-2xl text-xs"
+  return createPortal(<div ref={ref} role="menu" aria-label={label} className="fixed z-50 max-h-[60vh] w-64 max-w-[calc(100vw-16px)] overflow-y-auto rounded-lg border border-[var(--av-374151)] bg-[var(--av-111923)] p-1 shadow-2xl text-xs"
     style={{ left: Math.max(8, Math.min(menu.x, window.innerWidth - 264)), top: Math.max(8, Math.min(menu.y, window.innerHeight - Math.min(menu.items.length * 36 + 8, window.innerHeight * 0.6) - 8)) }}
     onContextMenu={(event) => event.preventDefault()} onKeyDown={(event) => {
       event.stopPropagation();
@@ -32,7 +32,7 @@ export function BookmarkMenu({ menu, onSelect, onClose, label = 'Bookmarks' }: {
       if (next >= 0) { event.preventDefault(); buttons[next]?.focus(); }
     }}>
     {menu.items.map((item) => <button key={item.id} role="menuitem" type="button" disabled={item.enabled === false} title={item.label}
-      className="block w-full truncate rounded px-3 py-2 text-left text-gray-200 hover:bg-[#253244] focus:bg-[#253244] focus:outline-none disabled:opacity-40"
+      className="block w-full truncate rounded px-3 py-2 text-left text-gray-200 hover:bg-[var(--av-253244)] focus:bg-[var(--av-253244)] focus:outline-none disabled:opacity-40"
       onClick={() => onSelect(item.id)}>{item.label}</button>)}
   </div>, document.body);
 }

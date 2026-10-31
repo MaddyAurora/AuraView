@@ -13,10 +13,11 @@ use tauri::{
 
 pub const MENU: &str = "browser-settings";
 pub const HISTORY: &str = "browser-history";
-const APP_KEYS: [&str; 3] = [
+const APP_KEYS: [&str; 4] = [
     "auraview.bookmarks.v1",
     "auraview.ai-dock.v1",
     "auraview.toolbar-visibility.v1",
+    "auraview.theme.v1",
 ];
 static KEEP_HISTORY: AtomicBool = AtomicBool::new(true);
 static PRUNING: AtomicBool = AtomicBool::new(false);
@@ -517,7 +518,7 @@ pub async fn toggle_browser_settings(
         .map_err(|e| e.to_string())?
         .to_logical::<f64>(scale);
     let width = 350_f64.min(size.width);
-    let height = 530_f64.min(size.height);
+    let height = 610_f64.min(size.height);
     let x = origin.x + (anchor.x + anchor.width - width).clamp(0.0, (size.width - width).max(0.0));
     let y = origin.y + (anchor.y + anchor.height + 4.0).clamp(0.0, (size.height - height).max(0.0));
     *ANCHOR.lock().unwrap() = Some(anchor);

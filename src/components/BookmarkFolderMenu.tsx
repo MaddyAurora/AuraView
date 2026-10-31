@@ -23,7 +23,7 @@ export function BookmarkFolderMenu({ x, y, onClose, ...props }: ComponentProps<t
   const items = bookmarkFolderItems(props.data, props.folderId);
   const height = Math.min(400, items.some((item) => item.kind === 'folder') ? 400 : Math.max(items.length, 1) * 32 + 50, window.innerHeight - 16);
   return createPortal(<div ref={ref} style={{ left: Math.max(8, Math.min(x, window.innerWidth - 308)), top: Math.max(8, Math.min(y, window.innerHeight - height - 8)), height }}
-    className="fixed z-40 w-[300px] overflow-hidden rounded-lg border border-[#374151] shadow-2xl">
+    className="fixed z-40 w-[300px] overflow-hidden rounded-lg border border-[var(--av-374151)] shadow-2xl">
     <BookmarkFolderContents {...props} />
   </div>, document.body);
 }

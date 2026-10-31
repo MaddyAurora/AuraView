@@ -19,7 +19,7 @@ export function BookmarkFolderWindow() {
     listen<string>('bookmark-folder-selected', (event) => setFolderId(event.payload)).then(retain).catch(console.error);
     return () => { disposed = true; stops.forEach((stop) => stop()); };
   }, []);
-  return <div className="flex h-screen flex-col overflow-hidden rounded-md border border-[#374151] bg-[#111923]" onKeyDown={(event) => { if (event.key === 'Escape') close(); }}>
+  return <div className="flex h-screen flex-col overflow-hidden rounded-md border border-[var(--av-374151)] bg-[var(--av-111923)]" onKeyDown={(event) => { if (event.key === 'Escape') close(); }}>
     <div className="min-h-0 flex-1">
       <BookmarkFolderContents data={data} folderId={folderId} onAction={(action) => {
         void emitTo('main', 'bookmark-menu-select', action).then(() => invoke('close_bookmark_folder')).catch(console.error);

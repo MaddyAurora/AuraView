@@ -35,5 +35,5 @@ export function DownloadsPreviewWindow() {
   const [ready, setReady] = useState(false);
   const downloads = useDownloads(() => setReady(true));
   useEffect(() => { if (ready) void invoke('downloads_preview_ready').catch(console.error); }, [ready]);
-  return <div className="h-screen overflow-hidden bg-[#111923] pointer-events-none"><Downloads downloads={downloads} preview onClose={() => {}} /></div>;
+  return <div className="h-screen overflow-hidden bg-[var(--av-111923)] pointer-events-none"><Downloads downloads={downloads} preview onClose={() => {}} /></div>;
 }

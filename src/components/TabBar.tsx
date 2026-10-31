@@ -172,7 +172,7 @@ export const TabBar: React.FC<TabBarProps> = ({
 
   return (
     <div
-      className="flex items-center bg-[#090c10] border-b border-[#1f2937] pl-2 pr-0 select-none h-10 overflow-hidden w-full cursor-default"
+      className="flex items-center bg-[var(--av-090c10)] border-b border-[var(--av-1f2937)] pl-2 pr-0 select-none h-10 overflow-hidden w-full cursor-default"
       onMouseDown={handleStartDrag}
       onDoubleClick={handleToggleMaximize}
       data-tauri-drag-region
@@ -259,8 +259,8 @@ export const TabBar: React.FC<TabBarProps> = ({
                 '--tab-width': `${pageWidth}px` } as React.CSSProperties}
               className={`browser-tab-page group relative flex min-w-0 shrink-0 items-center gap-2 px-3 py-1.5 h-9 text-xs font-medium cursor-pointer border-t border-x ${
                 isActive
-                  ? 'bg-[#151e28] text-gray-100 border-[#374151] shadow-sm'
-                  : 'bg-[#0f141b] text-gray-400 border-transparent hover:bg-[#121820] hover:text-gray-300'
+                  ? 'bg-[var(--av-151e28)] text-gray-100 border-[var(--av-374151)] shadow-sm'
+                  : 'bg-[var(--av-0f141b)] text-gray-400 border-transparent hover:bg-[var(--av-121820)] hover:text-gray-300'
               } ${linkedFirst ? '!border-r-transparent' : ''} ${linkedLast ? '!border-l-transparent' : ''}`}
             >
               {page.isLoading ? (
@@ -284,7 +284,7 @@ export const TabBar: React.FC<TabBarProps> = ({
                   title={linkedFirst ? 'Swap left and right pages' : undefined}
                   aria-label={linkedFirst ? 'Swap left and right pages' : undefined}
                   aria-hidden={!linkedFirst} disabled={!linkedFirst} tabIndex={linkedFirst ? 0 : -1}
-                  className={`browser-tab-swap group/swap absolute -right-2.5 top-1/2 z-10 -translate-y-1/2 flex h-5 w-5 items-center justify-center rounded text-purple-400 transition-opacity duration-200 motion-reduce:transition-none hover:text-cyan-300 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400 ${isActive ? 'bg-[#151e28]' : 'bg-[#0f141b]'} ${linkedFirst ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+                  className={`browser-tab-swap group/swap absolute -right-2.5 top-1/2 z-10 -translate-y-1/2 flex h-5 w-5 items-center justify-center rounded text-purple-400 transition-opacity duration-200 motion-reduce:transition-none hover:text-cyan-300 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400 ${isActive ? 'bg-[var(--av-151e28)]' : 'bg-[var(--av-0f141b)]'} ${linkedFirst ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
                   <Link2 className="w-3.5 h-3.5 transition-opacity group-hover/swap:opacity-0 group-focus-visible/swap:opacity-0 pointer-events-none" aria-label={linkedFirst ? 'Linked split pages' : undefined} />
                   <ArrowLeftRight className="absolute w-3.5 h-3.5 opacity-0 transition-opacity group-hover/swap:opacity-100 group-focus-visible/swap:opacity-100 pointer-events-none" aria-hidden="true" />
                 </button>
@@ -321,7 +321,7 @@ export const TabBar: React.FC<TabBarProps> = ({
           onDoubleClick={(event) => event.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
           data-tauri-drag-region="false"
-          className="p-1.5 rounded-md text-gray-400 hover:text-gray-100 hover:bg-[#1f2937]/50 transition-colors ml-1 shrink-0 cursor-pointer"
+          className="p-1.5 rounded-md text-gray-400 hover:text-gray-100 hover:bg-[var(--av-1f2937)]/50 transition-colors ml-1 shrink-0 cursor-pointer"
           title="New Tab (Ctrl+T)"
         >
           <Plus className="w-4 h-4 pointer-events-none" />
@@ -347,7 +347,7 @@ export const TabBar: React.FC<TabBarProps> = ({
           onClick={handleOpenDevTools}
           onMouseDown={(e) => e.stopPropagation()}
           data-tauri-drag-region="false"
-          className="h-10 w-9 flex items-center justify-center hover:bg-[#1a2533] text-gray-400 hover:text-cyan-400 transition-colors cursor-pointer"
+          className="h-10 w-9 flex items-center justify-center hover:bg-[var(--av-1a2533)] text-gray-400 hover:text-cyan-400 transition-colors cursor-pointer"
           title="Open DevTools Console"
         >
           <Terminal className="w-3.5 h-3.5 pointer-events-none" />
@@ -357,7 +357,7 @@ export const TabBar: React.FC<TabBarProps> = ({
           onClick={handleMinimize}
           onMouseDown={(e) => e.stopPropagation()}
           data-tauri-drag-region="false"
-          className="h-10 w-11 flex items-center justify-center hover:bg-[#1a2533] text-gray-400 hover:text-white transition-colors cursor-pointer"
+          className="h-10 w-11 flex items-center justify-center hover:bg-[var(--av-1a2533)] text-gray-400 hover:text-white transition-colors cursor-pointer"
           title="Minimize"
         >
           <Minus className="w-3.5 h-3.5 pointer-events-none" />
@@ -367,7 +367,7 @@ export const TabBar: React.FC<TabBarProps> = ({
           onClick={handleToggleMaximize}
           onMouseDown={(e) => e.stopPropagation()}
           data-tauri-drag-region="false"
-          className="h-10 w-11 flex items-center justify-center hover:bg-[#1a2533] text-gray-400 hover:text-white transition-colors cursor-pointer"
+          className="h-10 w-11 flex items-center justify-center hover:bg-[var(--av-1a2533)] text-gray-400 hover:text-white transition-colors cursor-pointer"
           title={isMaximized ? 'Restore' : 'Maximize'}
         >
           {isMaximized ? (

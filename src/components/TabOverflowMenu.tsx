@@ -25,7 +25,7 @@ export function TabOverflowMenu({ entries, activeTabId, onSelect, onCloseTab, on
   }, [ids, activeTabId]);
 
   return <div ref={idle.ref} onMouseEnter={idle.onMouseEnter} onMouseLeave={idle.onMouseLeave}
-    className="tab-overflow-menu flex h-full min-h-0 flex-col overflow-hidden rounded-[9px] border border-white/20 bg-[#111923] text-white shadow-2xl"
+    className="tab-overflow-menu flex h-full min-h-0 flex-col overflow-hidden rounded-[9px] border border-white/20 bg-[var(--av-111923)] text-white shadow-2xl"
     onMouseDown={(event) => { if (event.button === 1) event.preventDefault(); event.stopPropagation(); }}
     onAuxClick={(event) => { if (event.button === 1) event.preventDefault(); }}
     onDoubleClick={(event) => event.stopPropagation()}

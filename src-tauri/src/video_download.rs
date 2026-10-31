@@ -1407,9 +1407,10 @@ fn extract_one(
     let ext = file
         .extension()
         .and_then(|s| s.to_str())
+        .map(str::to_ascii_lowercase)
         .filter(|s| {
             matches!(
-                *s,
+                s.as_str(),
                 "mp4" | "webm" | "mkv" | "mov" | "ogv" | "avi" | "flv" | "ts"
             )
         })
@@ -1418,7 +1419,7 @@ fn extract_one(
     if fallback {
         verify_stream_duration(tools, &file, task)?;
     }
-    if reddit && ext != "mp4" {
+    if needs_mp4_conversion(reddit, &ext) {
         task.update(app, "merging", "Converting video to MP4…", 0, None);
         let converted = convert_mp4(tools, &file, work, task)?;
         if fallback { verify_stream_duration(tools, &converted, task)?; }
@@ -1426,7 +1427,11 @@ fn extract_one(
         return publish(&converted, downloads, &title, "mp4", task);
     }
     task.update(app, "saving", "Saving video…", 0, None);
-    publish(&file, downloads, &title, ext, task)
+    publish(&file, downloads, &title, &ext, task)
+}
+
+fn needs_mp4_conversion(reddit: bool, ext: &str) -> bool {
+    ext == "mkv" || (reddit && ext != "mp4")
 }
 
 fn convert_mp4(tools: &Path, input: &Path, work: &Path, task: &Task) -> Result<PathBuf, String> {
@@ -2087,7 +2092,7 @@ mod tests {
         }
     }
     #[test]
-    fn reddit_mp4_conversion_preserves_audio_and_cleans_cached_source() {
+    fn mkv_mp4_conversion_preserves_audio_and_cleans_cached_source() {
         let tools = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/download-tools");
         if !tools.join("ffmpeg.exe").exists() { return; }
         let sample = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/download-sample.mp4");
@@ -2114,6 +2119,15 @@ mod tests {
         let downloads = cache.0.join("Downloads");
         let saved = publish(&converted, &downloads, "Reddit post title", "mp4", &task).unwrap();
         assert_eq!(saved.file_name().unwrap(), "Reddit post title.mp4");
+    }
+    #[test]
+    fn mkv_downloads_from_any_site_are_converted_to_mp4() {
+        for reddit in [false, true] {
+            assert!(needs_mp4_conversion(reddit, "mkv"));
+            assert!(!needs_mp4_conversion(reddit, "mp4"));
+        }
+        assert!(needs_mp4_conversion(true, "webm"));
+        assert!(!needs_mp4_conversion(false, "webm"));
     }
     #[test]
     fn instagram_stories_resolve_only_the_selected_video_and_keep_existing_routes_separate() {

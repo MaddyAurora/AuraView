@@ -117,7 +117,7 @@ export function SplitDivider({ containerRef, ratio, containerWidth, onChange }: 
         change.current(clampSplitRatio(next, containerWidth));
       }
     }}
-    className={`flex w-2 shrink-0 cursor-col-resize touch-none items-center justify-center select-none outline-none transition-colors ${highlighted ? 'bg-cyan-500/25' : 'bg-[#090c10]'}`}>
-    <span className={`h-full w-px transition-colors ${highlighted ? 'bg-cyan-400' : 'bg-[#374151]'}`} />
+    className={`flex w-2 shrink-0 cursor-col-resize touch-none items-center justify-center select-none outline-none transition-colors ${highlighted ? 'bg-cyan-500/25' : 'bg-[var(--av-090c10)]'}`}>
+    <span className={`h-full w-px transition-colors ${highlighted ? 'bg-cyan-400' : 'bg-[var(--av-374151)]'}`} />
   </div>;
 }

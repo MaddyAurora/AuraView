@@ -8,6 +8,9 @@ import { DownloadsPreviewWindow } from './components/DownloadsPreview';
 import { BrowserHistoryWindow, BrowserSettingsWindow } from './components/BrowserSettings';
 import { TabOverflowWindow } from './components/TabOverflowWindow';
 import './index.css';
+import { initializeTheme } from './lib/theme';
+
+initializeTheme();
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
