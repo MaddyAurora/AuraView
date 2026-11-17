@@ -1,4 +1,4 @@
-## AuraView v0.3.10
+## AuraView v0.3.11
 
 - Open page-initiated links in background tabs and mute audio from individual tabs.
 - Drag completed downloads to other applications and use the improved downloads preview.

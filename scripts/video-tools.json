@@ -10,8 +10,8 @@
     "sha256": "cba84b26e0df5ae7f74fc66b86a95b866872a86292ebd84fa1e959927edd93bf"
   },
   "ffmpeg": {
-    "version": "N-127943-g2668cb6e31",
-    "url": "https://github.com/yt-dlp/FFmpeg-Builds/releases/download/autobuild-2026-10-22-18-33/ffmpeg-N-127943-g2668cb6e31-win64-gpl-shared.zip",
-    "sha256": "e8186d13862dd1143b78ff093252720329bc5a15ff10a6af8dbf3f03584fed4a"
+    "version": "N-128970-g11337618b2",
+    "url": "https://github.com/yt-dlp/FFmpeg-Builds/releases/download/autobuild-2026-11-16-23-35/ffmpeg-N-128970-g11337618b2-win64-gpl-shared.zip",
+    "sha256": "2a2b96289f2708b2c87294aa5b25efd72ad0c66b1660f858b144dda5ea278d15"
   }
 }
