@@ -235,6 +235,20 @@ test('active download remains visible through pointer movement, idle, outside cl
   h.hover(v, 301, 180); assert.equal(h.button.style.color, '#fca5a5');
 });
 
+test('completed downloads stop forcing the video button to stay visible', () => {
+  const h = page(), v = h.video();
+  h.hover(v); h.click();
+  h.result('request-1', 'downloading'); h.advance(3000);
+  assert.equal(h.button.style.display, 'block');
+  h.result('request-1', 'saved');
+  assert.equal(h.button.style.display, 'none', 'completion returns to the existing idle deadline');
+  h.hover(v, 301, 180);
+  assert.equal(h.button.style.display, 'block');
+  assert.equal(h.button.style.color, '#67e8a4');
+  h.advance(3000);
+  assert.equal(h.button.style.display, 'none');
+});
+
 test('keyboard focus on the download action remains usable while ordinary mouse focus still times out', () => {
   const h = page(), v = h.video();
   h.hover(v); h.button.fire('focus'); h.advance(3000);

@@ -103,7 +103,7 @@ test('right-click targets the exact background split page, even if detached befo
   const previousWindow = globalThis.window;
   globalThis.window = { __TAURI_INTERNALS__: {}, addEventListener() {}, removeEventListener() {} };
   let cursor = 0;
-  const slots = [], cleanups = [], calls = [], closed = [], selected = [];
+  const slots = [], cleanups = [], calls = [], closed = [], selected = [], audioActions = [];
   const events = new Map();
   const hooks = { ...React,
     useState(value) { const index = cursor++; if (!(index in slots)) slots[index] = value;
@@ -124,6 +124,7 @@ test('right-click targets the exact background split page, even if detached befo
   const foreground = tabState.createTab('foreground');
   const props = { tabs: [pair, foreground], activeTabId: foreground.id, onSelectTab: (id) => selected.push(id),
     canReopenTab: false, onTabMenuAction(action, pageId) {
+      if (action === 'mute') audioActions.push(pageId);
       const target = tabState.findTabPage(props.tabs, pageId);
       if (action === 'close' && target) closed.push([target.owner.id, target.pane]);
     },
@@ -138,6 +139,13 @@ test('right-click targets the exact background split page, even if detached befo
   const event = { clientX: 210, clientY: 22, preventDefault() {}, stopPropagation() {} };
   try {
     let cards = render();
+    pair.split.isPlayingAudio = true;
+    cards = render();
+    const audio = React.Children.toArray(cards.get('right').children).find((child) => child?.props?.['aria-label'] === 'Mute tab');
+    assert.ok(audio);
+    audio.props.onClick(event);
+    assert.deepEqual(audioActions, ['right']);
+    assert.deepEqual(selected, []);
     await new Promise((resolve) => setImmediate(resolve));
     calls.length = 0;
     cards.get('right').onContextMenu(event);

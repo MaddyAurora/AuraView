@@ -106,6 +106,18 @@ async function harness(storage = new Map(), failSave = false) {
   return h;
 }
 
+test('page new-window requests create background tabs without changing the active tab', async () => {
+  const h = await harness();
+  try {
+    const active = h.session.activeTabId;
+    const count = h.session.tabs.length;
+    h.event('page-open-background-tab', 'https://example.com/path');
+    assert.equal(h.session.activeTabId, active);
+    assert.equal(h.session.tabs.length, count + 1);
+    assert.equal(h.session.tabs.at(-1).url, 'https://example.com/path');
+  } finally { h.dispose(); }
+});
+
 test('bookmarks and Local Hub independently restore shown and hidden states after app restart, including keyboard changes', async () => {
   const storage = new Map();
   let h = await harness(storage);
@@ -238,7 +250,13 @@ test('download history previews on hover, closes on leave, and stays open only w
     h.navigation.onHoverDownloads(true); h.flush();
     assert.equal(h.downloadsPanel, undefined, 'hovering never inserts a panel into the browser layout');
     assert.equal(h.downloadsPreview.visible, true); assert.equal(h.navigation.downloadsPinned, false);
-    h.navigation.onHoverDownloads(false); h.flush(); assert.equal(h.downloadsPreview.visible, false);
+    h.navigation.onHoverDownloads(false); h.flush();
+    h.event('downloads-preview-hover', true);
+    await new Promise((resolve) => setTimeout(resolve, 300)); h.flush();
+    assert.equal(h.downloadsPreview.visible, true, 'entering the preview cancels the pending close');
+    h.event('downloads-preview-hover', false);
+    await new Promise((resolve) => setTimeout(resolve, 300)); h.flush();
+    assert.equal(h.downloadsPreview.visible, false);
     h.navigation.onHoverDownloads(true); h.flush();
     h.navigation.onToggleDownloads(); h.flush();
     h.navigation.onHoverDownloads(false); h.flush();
@@ -247,7 +265,9 @@ test('download history previews on hover, closes on leave, and stays open only w
     h.blur(); assert.ok(h.downloadsPanel, 'a pinned panel survives window blur');
     h.navigation.onToggleDownloads(); h.flush(); assert.equal(h.downloadsPanel, undefined);
     h.navigation.onHoverDownloads(true); h.flush();
-    h.blur(); assert.equal(h.downloadsPreview.visible, false, 'hover previews clear when the app loses focus');
+    h.event('downloads-preview-hover', false);
+    await new Promise((resolve) => setTimeout(resolve, 300)); h.flush();
+    assert.equal(h.downloadsPreview.visible, false);
     h.navigation.onToggleDownloads(); h.flush();
     h.downloadsPanel.onClose(); h.flush(); assert.equal(h.downloadsPanel, undefined);
   } finally { h.dispose(); }

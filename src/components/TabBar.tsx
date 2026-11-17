@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserPane, Tab } from '../types/browser';
-import { Plus, X, Server, Globe, Loader2, Minus, Square, Copy, Terminal, Link2, ArrowLeftRight, VolumeX } from 'lucide-react';
+import { Plus, X, Server, Globe, Loader2, Minus, Square, Copy, Terminal, Link2, ArrowLeftRight, VolumeX, Volume2 } from 'lucide-react';
 import { SiteIcon } from './SiteIcon';
 import { orderedTabPages } from '../lib/tabState';
 import { invoke } from '@tauri-apps/api/core';
@@ -277,7 +277,14 @@ export const TabBar: React.FC<TabBarProps> = ({
                 </span>
               </span>
 
-              {page.isMuted && <VolumeX aria-label="Tab muted" className="browser-tab-muted w-3 h-3 shrink-0 text-amber-400" />}
+              {(page.isPlayingAudio || page.isMuted) && <button type="button"
+                className="browser-tab-audio shrink-0 rounded-sm hover:bg-gray-700/60"
+                title={page.isMuted ? 'Unmute tab' : 'Mute tab'} aria-label={page.isMuted ? 'Unmute tab' : 'Mute tab'}
+                onPointerDown={(event) => event.stopPropagation()}
+                onMouseDown={(event) => event.stopPropagation()}
+                onClick={(event) => { event.stopPropagation(); onTabMenuAction('mute', page.id); }}>
+                {page.isMuted ? <VolumeX className="w-3 h-3 text-amber-400" /> : <Volume2 className="w-3 h-3" />}
+              </button>}
 
                 <button type="button" onClick={(event) => { event.stopPropagation(); onSwapTabPages(tab.id); }}
                   onMouseDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}

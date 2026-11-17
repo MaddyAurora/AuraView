@@ -12,6 +12,7 @@ export interface BrowserStatus {
   canGoBack?: boolean | null;
   canGoForward?: boolean | null;
   isMuted?: boolean | null;
+  isPlayingAudio?: boolean | null;
 }
 
 export function applyBrowserStatus(tab: Tab, status: BrowserStatus): Tab {
@@ -30,6 +31,7 @@ export function applyBrowserStatus(tab: Tab, status: BrowserStatus): Tab {
     canGoBack: status.canGoBack ?? tab.canGoBack,
     canGoForward: status.canGoForward ?? tab.canGoForward,
     isMuted: status.isMuted ?? tab.isMuted,
+    isPlayingAudio: status.isPlayingAudio ?? tab.isPlayingAudio,
     isAiServer: /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])([:/]|$)/i.test(url),
   };
 }

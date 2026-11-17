@@ -52,14 +52,17 @@ test('native hover preview changes only its overlay bounds and closes on rapid l
   } finally { h.dispose(); }
 });
 
-test('browser preview uses a fixed passive overlay and never a panel in document flow', () => {
+test('browser preview uses an interactive fixed overlay and tracks pointer entry', () => {
   const h = harness(false);
   try {
-    const props = { visible: true, anchor, downloads: [] };
+    const hovering = [];
+    const props = { visible: true, anchor, downloads: [], onHover: (value) => hovering.push(value) };
     h.render(props);
     const tree = h.render(props);
     assert.match(tree.props.className, /fixed/);
-    assert.match(tree.props.className, /pointer-events-none/);
+    assert.doesNotMatch(tree.props.className, /pointer-events-none/);
+    tree.props.onPointerEnter(); tree.props.onPointerLeave();
+    assert.deepEqual(hovering, [true, false]);
     assert.equal(tree.props.children.props.preview, true);
     assert.deepEqual(tree.props.style, { left: 0, top: 76, width: 1200, height: 94 });
     assert.equal(h.render({ ...props, visible: false }), null);
@@ -73,6 +76,8 @@ test('native preview signals readiness only after its history has loaded', () =>
     const tree = h.render();
     assert.equal(tree.props.children.props.preview, true);
     assert.deepEqual(h.calls, []);
+    tree.props.onPointerEnter(); tree.props.onPointerLeave();
+    assert.deepEqual(h.calls.splice(0), [{ name: 'downloads_preview_hover', args: { hovering: true } }, { name: 'downloads_preview_hover', args: { hovering: false } }]);
     h.loaded(); h.render();
     assert.deepEqual(h.calls, [{ name: 'downloads_preview_ready', args: undefined }]);
   } finally { h.dispose(); }

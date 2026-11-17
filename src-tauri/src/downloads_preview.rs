@@ -1,5 +1,5 @@
 use std::sync::Mutex;
-use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, WebviewBuilder, WebviewUrl, Window, WindowEvent, window::WindowBuilder};
+use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewBuilder, WebviewUrl, Window, WindowEvent, window::WindowBuilder};
 
 pub const LABEL: &str = "downloads-preview";
 #[derive(Clone, Copy, serde::Deserialize)]
@@ -25,7 +25,7 @@ impl PreviewState {
 static STATE: Mutex<PreviewState> = Mutex::new(PreviewState { bounds: None, ready: false, request: 0 });
 static UPDATE: tauri::async_runtime::Mutex<()> = tauri::async_runtime::Mutex::const_new(());
 
-// Hide and reuse the passive window. Browser pane bounds are never changed.
+// Hide and reuse the preview window. Browser pane bounds are never changed.
 pub fn hide(app: &AppHandle) {
     STATE.lock().unwrap().bounds = None;
     if let Some(window) = app.get_window(LABEL) { let _ = window.hide(); }
@@ -47,9 +47,9 @@ fn apply(app: &AppHandle) -> Result<(), String> {
             .focused(false).focusable(false).visible(false).parent(&main).map_err(|e| e.to_string())?
             .build().map_err(|e| e.to_string())?;
         window.on_window_event(|event| { if matches!(event, WindowEvent::Destroyed) { STATE.lock().unwrap().ready = false; } });
-        if let Err(error) = window.set_ignore_cursor_events(true).and_then(|_| window.add_child(
+        if let Err(error) = window.add_child(
             WebviewBuilder::new(LABEL, WebviewUrl::App("index.html#downloads-preview".into())).focused(false).auto_resize(),
-            LogicalPosition::new(0.0, 0.0), LogicalSize::new(bounds.width, bounds.height))) {
+            LogicalPosition::new(0.0, 0.0), LogicalSize::new(bounds.width, bounds.height)) {
             let _ = window.destroy(); return Err(error.to_string());
         }
         window
@@ -61,6 +61,12 @@ fn apply(app: &AppHandle) -> Result<(), String> {
     if STATE.lock().unwrap().visible() { popup.show().map_err(|e| e.to_string())?; }
     else { popup.hide().map_err(|e| e.to_string())?; }
     Ok(())
+}
+
+#[tauri::command]
+pub fn downloads_preview_hover(app: AppHandle, webview: tauri::Webview, hovering: bool) -> Result<(), String> {
+    if webview.label() != LABEL { return Err("Not a downloads preview window".into()); }
+    app.emit_to("main", "downloads-preview-hover", hovering).map_err(|error| error.to_string())
 }
 
 async fn schedule(app: AppHandle) -> Result<(), String> {

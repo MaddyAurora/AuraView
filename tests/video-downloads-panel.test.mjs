@@ -18,7 +18,7 @@ function harness() {
     if (name === 'react') return { useState: (initial) => {
       const index = cursor++; if (!(index in slots)) slots[index] = initial;
       return [slots[index], (next) => { slots[index] = typeof next === 'function' ? next(slots[index]) : next; }];
-    }, useEffect: (effect, deps) => {
+    }, useRef: (initial) => { const index = cursor++; return slots[index] ||= { current: initial }; }, useEffect: (effect, deps) => {
       const index = cursor++, previous = effects.get(index);
       if (!previous || deps.some((value, i) => value !== previous.deps[i])) {
         previous?.cleanup?.(); effects.set(index, { deps, cleanup: effect() });
@@ -92,7 +92,7 @@ test('the visible panel sends cancellation and retry to their exact native job',
   } finally { h.dispose(); }
 });
 
-test('hover history is read-only while the pinned panel retains file actions', () => {
+test('hover history exposes the same saved file actions', () => {
   const h = harness();
   try {
     const tree = h.panel({ downloads: [{ ...job(1, 'saved'), hasFile: true, redownloadable: true }], preview: true, onClose() {} });
@@ -100,8 +100,33 @@ test('hover history is read-only while the pinned panel retains file actions', (
     const visit = (node) => { if (!node || typeof node !== 'object') return; if (node.type === 'button') buttons.push(node);
       for (const child of React.Children.toArray(node.props?.children)) visit(child); };
     visit(tree);
-    assert.deepEqual(buttons, []);
+    assert.deepEqual(buttons.map((button) => button.props.title), ['Show in folder', 'Download again (saves a new copy)', 'Delete file (Recycle Bin)']);
+    buttons[0].props.onClick();
+    assert.deepEqual(h.calls, [{ command: 'reveal_download', args: { id: 'video:selected-video' } }]);
+  } finally { h.dispose(); }
+});
+
+test('only a completed file starts one native drag after the pointer moves', () => {
+  const h = harness();
+  try {
+    const items = [{ ...job(1, 'saved'), id: 'image:photo', hasFile: true },
+      { ...job(2, 'deleted'), id: 'image:deleted', hasFile: true, fileDeleted: true }, job(3)];
+    const nodes = [];
+    const visit = (node) => { if (!node || typeof node !== 'object') return;
+      if (node.props?.onPointerDown) nodes.push(node);
+      for (const child of React.Children.toArray(node.props?.children)) visit(child); };
+    visit(h.panel({ downloads: items, onClose() {} }));
+    const target = { setPointerCapture() {}, releasePointerCapture() {} };
+    const down = { button: 0, pointerType: 'mouse', pointerId: 3, clientX: 10, clientY: 10, currentTarget: target };
+    const move = { ...down, buttons: 1, clientX: 16 };
+    nodes[0].props.onPointerDown(down); nodes[0].props.onPointerMove(move);
+    nodes[1].props.onPointerDown(down); nodes[1].props.onPointerMove(move);
     assert.deepEqual(h.calls, []);
+    nodes[2].props.onPointerDown(down);
+    nodes[2].props.onPointerMove({ ...move, clientX: 13 });
+    assert.deepEqual(h.calls, []);
+    nodes[2].props.onPointerMove(move); nodes[2].props.onPointerMove(move);
+    assert.deepEqual(h.calls, [{ command: 'drag_download', args: { id: 'image:photo' } }]);
   } finally { h.dispose(); }
 });
 

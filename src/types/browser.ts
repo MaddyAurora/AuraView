@@ -15,6 +15,7 @@ export interface Tab {
   canGoBack: boolean;
   canGoForward: boolean;
   isMuted?: boolean;
+  isPlayingAudio?: boolean;
   isAiServer?: boolean;
   splitEnabled?: boolean;
   splitReversed?: boolean;

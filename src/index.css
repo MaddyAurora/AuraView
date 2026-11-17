@@ -87,12 +87,11 @@
   display: none;
 }
 
-.browser-tab-page[data-tab-narrow='true'] .browser-tab-muted {
+.browser-tab-page[data-tab-narrow='true'] .browser-tab-audio {
   position: absolute;
   right: 3px;
   bottom: 2px;
-  width: 9px;
-  height: 9px;
+  z-index: 1;
 }
 
 .browser-tab-page[data-tab-compact='true'] {

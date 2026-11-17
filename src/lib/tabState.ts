@@ -27,7 +27,7 @@ export function moveTab(session: BrowserSession, id: string, toIndex: number): B
 export function createTab(id: string, url = 'https://www.google.com'): Tab {
   return { id, url, inputUrl: url,
     title: url === 'https://www.google.com' ? 'Google' : new URL(url).hostname,
-    isLoading: true, canGoBack: false, canGoForward: false };
+    isLoading: true, canGoBack: false, canGoForward: false, isPlayingAudio: false };
 }
 
 export function enableTabSplit(tab: Tab, splitId = `tab-${crypto.randomUUID()}`): Tab {
@@ -130,7 +130,7 @@ export function duplicateTabPage(session: BrowserSession, pageId: string): Brows
   if (!target) return session;
   const { split, splitEnabled, splitReversed, splitRatio, view, ...page } = target.page;
   const duplicate = { ...page, id: `tab-${crypto.randomUUID()}`, inputUrl: page.url,
-    isLoading: true, canGoBack: false, canGoForward: false };
+    isLoading: true, canGoBack: false, canGoForward: false, isPlayingAudio: false };
   const tabs = [...session.tabs];
   tabs.splice(tabs.indexOf(target.owner) + 1, 0, duplicate);
   return { ...session, tabs, activeTabId: duplicate.id };
@@ -159,7 +159,7 @@ export function reopenTab(session: BrowserSession): BrowserSession {
   if (!closed) return session;
   // Closed native views are retired permanently. Restore URLs/layout into fresh views.
   const restore = (page: Tab): Tab => ({ ...page, id: `tab-${crypto.randomUUID()}`, view: undefined,
-    isLoading: true, canGoBack: false, canGoForward: false,
+    isLoading: true, canGoBack: false, canGoForward: false, isPlayingAudio: false,
     split: page.split ? restore(page.split) : undefined });
   const tab = restore(closed.tab);
   const tabs = [...session.tabs];

@@ -1,15 +1,11 @@
-## AuraView v0.3.9
+## AuraView v0.3.10
 
-### Themes
-- Choose from six two-color themes in Settings. Your selection is remembered across restarts.
-
-### Video downloads
-- Convert MKV video downloads to MP4 across supported sites.
-
-### Windows icon
-- Refresh the AuraView globe icon for the executable and newly created shortcuts. Existing shortcuts may need to be recreated to show the new icon.
+- Open page-initiated links in background tabs and mute audio from individual tabs.
+- Drag completed downloads to other applications and use the improved downloads preview.
+- Improve video download controls and YouTube ad blocking for shared links.
+- Refresh the AuraView icon and Windows installer shortcuts.
 
 ### Windows installers
-Choose the **EXE setup** or **MSI installer** below. Both install AuraView v0.3.9 for Windows x64 and bundle the configured video download tools and ad-blocking resources.
+Choose the **EXE setup** or **MSI installer** below for Windows x64. Both bundle the configured video download tools and ad-blocking resources.
 
-> Note: The installers are not code-signed, so Windows SmartScreen may show a warning.
+> The installers are not code-signed, so Windows SmartScreen may show a warning.

@@ -29,7 +29,14 @@ fn site(url: &str) -> Option<Site> {
 // Worker-served documents never reach Fetch.requestPaused. Bypass that path only
 // on the public sites whose first-party responses we filter, while enabled.
 pub(crate) fn bypass_service_worker(url: &str, enabled: bool) -> bool {
-    enabled && crate::adblock::public_url(url) && site(url).is_some()
+    if !enabled || !crate::adblock::public_url(url) {
+        return false;
+    }
+    // YouTube share links redirect to a watch page. Set the policy before the
+    // redirect so its first document cannot be served by a cached worker.
+    site(url).is_some() || tauri::Url::parse(url).ok().and_then(|url| {
+        url.host_str().map(|host| host.trim_end_matches('.').eq_ignore_ascii_case("youtu.be"))
+    }).unwrap_or(false)
 }
 
 pub(crate) async fn prepare_navigation(view: &tauri::Webview, url: &str) {
@@ -606,6 +613,16 @@ pub(crate) unsafe fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn youtube_share_links_prepare_service_worker_bypass_before_redirect() {
+        for url in ["https://youtu.be/abc?t=30", "https://www.youtube.com/watch?v=abc", "https://www.instagram.com/"] {
+            assert!(bypass_service_worker(url, true), "{url}");
+            assert!(!bypass_service_worker(url, false), "{url}");
+        }
+        for url in ["https://youtu.be.evil.example/abc", "https://example.com/", "http://localhost/"] {
+            assert!(!bypass_service_worker(url, true), "{url}");
+        }
+    }
     #[test]
     fn inspect_direct_watch_sample() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/.adblock-check.local/youtube-watch.html");

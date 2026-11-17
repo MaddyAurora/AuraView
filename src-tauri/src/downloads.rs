@@ -5,7 +5,7 @@ use std::{
     sync::{Mutex, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -245,7 +245,7 @@ fn saved_file(id: &str) -> Result<SavedFile, String> {
         .ok_or_else(|| "This download has no saved file".into())
 }
 fn authorize(webview: &tauri::Webview) -> Result<(), String> {
-    if webview.label() == "main" {
+    if matches!(webview.label(), "main" | crate::downloads_preview::LABEL) {
         Ok(())
     } else {
         Err("Downloads are managed from AuraView".into())
@@ -260,10 +260,7 @@ fn target(id: &str) -> Result<(&str, &str), String> {
 }
 #[tauri::command]
 pub fn list_downloads(webview: tauri::Webview) -> Result<Vec<Entry>, String> {
-    // The passive preview can read history; file actions still require main.
-    if webview.label() != crate::downloads_preview::LABEL {
-        authorize(&webview)?;
-    }
+    authorize(&webview)?;
     Ok(history().lock().unwrap().entries.clone())
 }
 #[tauri::command]
@@ -278,7 +275,7 @@ pub async fn cancel_download(
     }
     let (kind, key) = target(&id)?;
     match kind {
-        "video" => crate::video_download::cancel_video_download(webview, key.into()),
+        "video" => crate::video_download::cancel_video_download(app.get_webview("main").ok_or("Main view is unavailable")?, key.into()),
         "browser" => crate::browser_download::action(app, key.into(), false).await,
         _ => Err("This image is saved immediately and cannot be cancelled".into()),
     }
@@ -292,7 +289,7 @@ pub async fn retry_download(
     authorize(&webview)?;
     let (kind, key) = target(&id)?;
     match kind {
-        "video" => crate::video_download::retry_video_download(app, webview, key.into()),
+        "video" => { let main = app.get_webview("main").ok_or("Main view is unavailable")?; crate::video_download::retry_video_download(app, main, key.into()) },
         "browser" => crate::browser_download::action(app, key.into(), true).await,
         _ => Err("Use the image’s download button to retry".into()),
     }
@@ -305,6 +302,115 @@ pub async fn reveal_download(webview: tauri::Webview, id: String) -> Result<(), 
     tauri::async_runtime::spawn_blocking(move || crate::download_files::reveal(&file.path))
         .await
         .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn drag_download(app: AppHandle, webview: tauri::Webview, id: String) -> Result<(), String> {
+    authorize(&webview)?;
+    let file = saved_file(&id)?;
+    if file.deleted || !file.path.is_file() {
+        return Err("This downloaded file is no longer available".into());
+    }
+    #[cfg(windows)]
+    {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.run_on_main_thread(move || { let _ = sender.send(file_drag::start(&file.path)); })
+            .map_err(|error| error.to_string())?;
+        tauri::async_runtime::spawn_blocking(move || receiver.recv().map_err(|e| e.to_string())?)
+            .await.map_err(|e| e.to_string())?
+    }
+    #[cfg(not(windows))]
+    { let _ = (app, file); Err("Dragging downloads is only available on Windows".into()) }
+}
+
+#[cfg(windows)]
+mod file_drag {
+    use std::path::Path;
+    use windows::Win32::{
+        Foundation::{DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS},
+        System::{Com::{CoTaskMemFree, IDataObject}, Ole::{DoDragDrop, OleInitialize, OleUninitialize, IDropSource, IDropSource_Impl, DROPEFFECT, DROPEFFECT_COPY}, SystemServices::{MODIFIERKEYS_FLAGS, MK_LBUTTON}},
+        UI::{Input::KeyboardAndMouse::{GetAsyncKeyState, ReleaseCapture, VK_LBUTTON}, Shell::{ILFindLastID, SHCreateDataObject, SHParseDisplayName}},
+    };
+    use windows_core::{implement, BOOL, HSTRING, HRESULT};
+
+    #[implement(IDropSource)]
+    struct Source;
+    impl IDropSource_Impl for Source_Impl {
+        fn QueryContinueDrag(&self, escape: BOOL, keys: MODIFIERKEYS_FLAGS) -> HRESULT {
+            if escape.as_bool() { DRAGDROP_S_CANCEL }
+            else if keys.0 & MK_LBUTTON.0 == 0 { DRAGDROP_S_DROP }
+            else { HRESULT(0) }
+        }
+        fn GiveFeedback(&self, _: DROPEFFECT) -> HRESULT { DRAGDROP_S_USEDEFAULTCURSORS }
+    }
+
+    unsafe fn data_object(path: &Path) -> Result<IDataObject, String> {
+        let parent = path.parent().ok_or("Downloaded file has no parent folder")?;
+        let mut folder_pidl = std::ptr::null_mut();
+        SHParseDisplayName(&HSTRING::from(parent.as_os_str()), None, &mut folder_pidl, 0, None)
+            .map_err(|e| e.to_string())?;
+        let mut file_pidl = std::ptr::null_mut();
+        let parsed = SHParseDisplayName(&HSTRING::from(path.as_os_str()), None, &mut file_pidl, 0, None);
+        let result = match parsed {
+            Ok(()) => {
+                let child = ILFindLastID(file_pidl);
+                let result = SHCreateDataObject(Some(folder_pidl), Some(&[child]), None::<&IDataObject>)
+                    .map_err(|e| e.to_string());
+                CoTaskMemFree(Some(file_pidl.cast()));
+                result
+            }
+            Err(error) => Err(error.to_string()),
+        };
+        CoTaskMemFree(Some(folder_pidl.cast()));
+        result
+    }
+
+    pub fn start(path: &Path) -> Result<(), String> {
+        unsafe {
+            // A quick click or a delayed UI dispatch must never begin a stale drag.
+            if GetAsyncKeyState(VK_LBUTTON.0 as i32) >= 0 { return Ok(()); }
+            OleInitialize(None).map_err(|e| e.to_string())?;
+            let result = (|| -> Result<(), String> {
+                let data = data_object(path)?;
+                if GetAsyncKeyState(VK_LBUTTON.0 as i32) >= 0 { return Ok(()); }
+                let source: IDropSource = Source.into();
+                let _ = ReleaseCapture();
+                let mut effect = DROPEFFECT::default();
+                let outcome = DoDragDrop(&data, &source, DROPEFFECT_COPY, &mut effect);
+                if outcome.is_err() { return Err(outcome.to_string()); }
+                Ok(())
+            })();
+            OleUninitialize();
+            result
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use windows::Win32::{System::{Com::{FORMATETC, DVASPECT_CONTENT, TYMED_HGLOBAL}, Ole::{CF_HDROP, ReleaseStgMedium}}, UI::Shell::{DragQueryFileW, HDROP}};
+
+        #[test]
+        fn shell_data_contains_the_real_file_path() {
+            unsafe {
+                OleInitialize(None).unwrap();
+                let path = std::env::current_exe().unwrap();
+                let data = data_object(&path).unwrap();
+                let format = FORMATETC { cfFormat: CF_HDROP.0, ptd: std::ptr::null_mut(),
+                    dwAspect: DVASPECT_CONTENT.0, lindex: -1, tymed: TYMED_HGLOBAL.0 as u32 };
+                let mut medium = data.GetData(&format).expect("Shell must supply a file drop");
+                let hdrop = HDROP(medium.u.hGlobal.0);
+                assert_eq!(DragQueryFileW(hdrop, u32::MAX, None), 1);
+                let mut buffer = vec![0u16; 32768];
+                let len = DragQueryFileW(hdrop, 0, Some(&mut buffer)) as usize;
+                let actual = std::path::PathBuf::from(String::from_utf16_lossy(&buffer[..len]));
+                assert_eq!(actual, path);
+                ReleaseStgMedium(&mut medium);
+                drop(data);
+                OleUninitialize();
+            }
+        }
+    }
 }
 #[tauri::command]
 pub async fn delete_download(
@@ -343,7 +449,8 @@ pub async fn delete_download(
         entry.retryable = false;
         registry.record(entry)
     };
-    let _ = app.emit_to("main", "download-progress", entry);
+    let _ = app.emit_to("main", "download-progress", &entry);
+    let _ = app.emit_to(crate::downloads_preview::LABEL, "download-progress", &entry);
     Ok(())
 }
 #[tauri::command]
@@ -356,7 +463,8 @@ pub fn redownload_download(
     let file = saved_file(&id)?;
     match &file.replay {
         Replay::Video(key) => {
-            crate::video_download::retry_video_download(app, webview, key.clone())
+            let main = app.get_webview("main").ok_or("Main view is unavailable")?;
+            crate::video_download::retry_video_download(app, main, key.clone())
         }
         _ => {
             crate::download_files::start(app, file);

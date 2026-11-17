@@ -380,7 +380,7 @@
   }
   function pinnedVideo() {
     if (pinned && (!pinned.video.isConnected || target(pinned.video).key !== pinned.state.key
-      || (!busy(pinned.state.status) && pinned.state.status !== 'saved'))) pinned = undefined;
+      || !busy(pinned.state.status))) pinned = undefined;
     return pinned?.video;
   }
   function render() {

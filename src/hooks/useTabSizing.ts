@@ -15,7 +15,7 @@ export function useTabSizing(areaRef: RefObject<HTMLDivElement>, stripRef: RefOb
     const ordered = orderedTabPages(tab);
     const visible = tab.splitEnabled ? ordered : ordered.slice(0, 1);
     return { id: tab.id, pages: visible.map(({ page }, index) => ({ id: page.id, title: page.title,
-      isMuted: Boolean(page.isMuted),
+      isMuted: Boolean(page.isMuted || page.isPlayingAudio),
       linkedFirst: visible.length === 2 && index === 0 })) };
   });
   const signature = JSON.stringify(groups);

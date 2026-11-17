@@ -788,6 +788,7 @@ pub struct WebviewStatusPayload {
     pub is_loading: Option<bool>,
     pub can_go_back: Option<bool>,
     pub can_go_forward: Option<bool>,
+    pub is_playing_audio: Option<bool>,
 }
 
 fn navigation_status(tab_id: &str, pane: &'static str, url: &str, is_loading: bool) -> WebviewStatusPayload {
@@ -1207,6 +1208,7 @@ fn create_browser_view(app: &AppHandle, tab_id: &str, pane: &'static str, bounds
     let app_nav = app.clone();
     let app_load = app.clone();
     let app_title = app.clone();
+    let app_new_window = app.clone();
     let image_token = image_download::token();
     let video_token = image_download::token();
     let adblock_token = image_download::token();
@@ -1215,6 +1217,10 @@ fn create_browser_view(app: &AppHandle, tab_id: &str, pane: &'static str, bounds
         .initialization_script_for_all_frames(adblock::script(&adblock_token))
         .initialization_script_for_all_frames(image_download::script(&image_token))
         .initialization_script_for_all_frames(video_download::script(&video_token))
+        .on_new_window(move |url, _features| {
+            let _ = app_new_window.emit("page-open-background-tab", url.to_string());
+            tauri::webview::NewWindowResponse::Deny
+        })
         .on_navigation(move |url| {
             if url.as_str() == "about:blank" { return true; }
             if url.as_str() == "https://auraview.invalid/retry-local-server" {
@@ -1293,6 +1299,7 @@ fn create_browser_view(app: &AppHandle, tab_id: &str, pane: &'static str, bounds
     image_download::install(app, &child, image_token).map_err(|error| error.to_string())?;
     video_download::install(app, &child, video_token).map_err(|error| error.to_string())?;
     browser_download::install(app, &child).map_err(|error| error.to_string())?;
+    tab_audio::install(app, &child, tab_id, pane).map_err(|error| error.to_string())?;
     page_context_menu::install(app, &child, BrowserViewRef { tab_id: tab_id.into(), pane: pane.into() })
         .map_err(|error| error.to_string())?;
     favicon::install(app, &child, tab_id, pane).map_err(|error| error.to_string())?;
@@ -1380,7 +1387,8 @@ pub fn run() {
             video_download::list_video_downloads, video_download::cancel_video_download, video_download::retry_video_download,
             downloads::list_downloads, downloads::cancel_download, downloads::retry_download,
             downloads::reveal_download, downloads::delete_download, downloads::redownload_download,
-            downloads_preview::set_downloads_preview, downloads_preview::downloads_preview_ready,
+            downloads::drag_download,
+            downloads_preview::set_downloads_preview, downloads_preview::downloads_preview_ready, downloads_preview::downloads_preview_hover,
             bookmark_editor::show_bookmark_editor, bookmark_editor::get_bookmark_editor, bookmark_editor::close_bookmark_editor,
             bookmark_folder::show_bookmark_folder, bookmark_folder::get_bookmark_folder, bookmark_folder::close_bookmark_folder,
             bookmark_transfer::import_bookmarks_html, bookmark_transfer::export_bookmarks_html,

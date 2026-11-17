@@ -26,6 +26,12 @@ export function App() {
   toolbarVisibilityRef.current = toolbarVisibility;
   const [showDownloads, setShowDownloads] = useState(false);
   const [hoverDownloads, setHoverDownloads] = useState(false);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | undefined>();
+  const handleHoverDownloads = useCallback((hovering: boolean) => {
+    clearTimeout(hoverTimer.current);
+    if (hovering) setHoverDownloads(true);
+    else hoverTimer.current = setTimeout(() => setHoverDownloads(false), 250);
+  }, []);
   const downloadsAnchor = useRef<HTMLDivElement>(null);
   const downloads = useDownloads();
   const downloadIndicator = useDownloadIndicator(downloads);
@@ -68,11 +74,7 @@ export function App() {
     return () => window.removeEventListener('storage', restore);
   }, []);
 
-  useEffect(() => {
-    const leave = () => setHoverDownloads(false);
-    window.addEventListener('blur', leave);
-    return () => window.removeEventListener('blur', leave);
-  }, []);
+  useEffect(() => () => clearTimeout(hoverTimer.current), []);
 
   const updateStatus = useCallback((status: BrowserStatus) => {
     setSession((previous) => ({ ...previous, tabs: applyTabStatus(previous.tabs, status) }));
@@ -99,7 +101,12 @@ export function App() {
     const stops: (() => void)[] = [];
     const retain = (stop: () => void) => { if (disposed) stop(); else stops.push(stop); };
     listen<string>('history-open-url', (event) => handleNewTab(event.payload)).then(retain).catch(console.error);
+    listen<boolean>('downloads-preview-hover', (event) => handleHoverDownloads(event.payload)).then(retain).catch(console.error);
     listen<string>('page-selection-open-url', (event) => handleNewTab(event.payload)).then(retain).catch(console.error);
+    listen<string>('page-open-background-tab', (event) => {
+      const tab = createTab(`tab-${crypto.randomUUID()}`, event.payload);
+      setSession((previous) => ({ ...previous, tabs: [...previous.tabs, tab] }));
+    }).then(retain).catch(console.error);
     listen<{ view: BrowserViewRef; text: string }>('page-selection-fill-address', (event) => {
       const { view, text } = event.payload;
       const owner = sessionRef.current.tabs.find((tab) => (tab.splitEnabled ? tabViews(tab) : [tabPageView(tab, 'primary')])
@@ -114,7 +121,7 @@ export function App() {
     listen<string>('browser-history-error', (event) => setSettingsError(event.payload)).then(retain).catch(console.error);
     void invoke('browser_settings_ready').catch((error) => { if (!disposed) setSettingsError(String(error)); });
     return () => { disposed = true; stops.forEach((stop) => stop()); };
-  }, [isTauri, handleNewTab]);
+  }, [isTauri, handleNewTab, handleHoverDownloads]);
 
   const handleCloseTab = useCallback((id: string, event?: React.MouseEvent) => {
     event?.stopPropagation();
@@ -319,11 +326,11 @@ export function App() {
         onToggleBookmarks={() => toggleToolbar('showBookmarks')}
         showDownloads={showDownloads || hoverDownloads} downloadsPinned={showDownloads}
         downloadCount={downloadIndicator.count} downloadPercent={downloadIndicator.percent} downloadComplete={downloadIndicator.complete}
-        onHoverDownloads={setHoverDownloads}
-        onToggleDownloads={() => { setShowDownloads((previous) => !previous); setHoverDownloads(false); }} />
+        onHoverDownloads={handleHoverDownloads}
+        onToggleDownloads={() => { clearTimeout(hoverTimer.current); setShowDownloads((previous) => !previous); setHoverDownloads(false); }} />
       {showDownloads && <Downloads downloads={downloads} onClose={() => { setShowDownloads(false); setHoverDownloads(false); }} />}
       {settingsError && <div role="alert" className="flex items-center justify-between gap-4 bg-red-950/70 px-4 py-2 text-xs text-red-200"><span>{settingsError}</span><button onClick={() => setSettingsError('')} className="underline shrink-0">Dismiss</button></div>}
-      <DownloadsPreview visible={hoverDownloads && !showDownloads} anchor={downloadsAnchor} downloads={downloads} />
+      <DownloadsPreview visible={hoverDownloads && !showDownloads} anchor={downloadsAnchor} downloads={downloads} onHover={handleHoverDownloads} />
       <BookmarksBar visible={showBookmarks} getCurrentPage={() => bookmarkPage().page}
         onOpen={(url, newTab) => { if (newTab) handleNewTab(url); else handlePaneNavigate(bookmarkPage().pane, url); }}
         onDialogChange={setEditorOpen} />
